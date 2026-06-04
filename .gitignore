@@ -1,0 +1,38 @@
+# Environment and secrets (never commit)
+.env
+.env.local
+.env.*.local
+secrets/
+*.pem
+*.key
+
+# Keep template only
+!.env.example
+
+# Backups and dumps
+*.bak
+*.sql
+*.sql.gz
+*.rdb
+n8n_backup_*.tar.gz
+backups/
+
+# Logs and runtime
+*.log
+/var/log/
+
+# Docker overrides (local experiments)
+docker-compose.override.yml
+docker-compose.local.yml
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Temp archives from restore
+tmp/
+*.tmp
