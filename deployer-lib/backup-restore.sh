@@ -5,6 +5,7 @@ BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-7}"
 restore_stack() {
     local archive="${1:-}"
     check_root
+    resolve_install_base_dir || die "No install found. Set N8N_BASE_DIR or run install first."
     cd "$BASE_DIR" || die "Missing ${BASE_DIR}"
 
     if [[ -z "$archive" ]]; then
@@ -76,10 +77,11 @@ restore_stack() {
     rm -rf "$tmp"
     generate_compose
     if declare -F docker_compose >/dev/null; then
-        docker_compose up -d --scale "n8n-worker=${N8N_WORKER_REPLICAS:-3}"
+        docker_compose up -d --pull always --scale "n8n-worker=${N8N_WORKER_REPLICAS:-3}" || die "docker compose up failed after restore"
     else
-        docker compose up -d --scale "n8n-worker=${N8N_WORKER_REPLICAS:-3}"
+        docker compose up -d --pull always --scale "n8n-worker=${N8N_WORKER_REPLICAS:-3}" || die "docker compose up failed after restore"
     fi
+    if declare -F apply_runtime_fixes >/dev/null; then apply_runtime_fixes; fi
     wait_for_n8n_upstream 180 || true
     systemctl reload nginx 2>/dev/null || true
     log OK "Restore complete"
@@ -96,6 +98,7 @@ EOF
 
 rollback_stack() {
     check_root
+    resolve_install_base_dir || die "No install found"
     cd "$BASE_DIR"
     [[ -f "$RELEASE_FILE" ]] || die "No ${RELEASE_FILE} for rollback"
 
@@ -112,5 +115,5 @@ rollback_stack() {
     load_existing_configuration
     generate_env
     generate_compose
-    deploy_stack
+    deploy_stack || die "rollback deploy failed"
 }

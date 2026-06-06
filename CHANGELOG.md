@@ -32,6 +32,9 @@ Versionado del **deployer** (`n8n-deployer.sh`), no de la imagen `n8nio/n8n`.
 - nginx: sin `limit_req` en editor/API (evita 503 en `/assets/*.js`); rate limit opcional solo en webhooks.
 - Eliminado `N8N_DISABLE_PRODUCTION_MAIN_PROCESS` en main (UI estable como monolito).
 - Healthcheck n8n con `node`; `http2 on` en nginx; sin OCSP stapling que generaba warnings.
+- `uninstall`: detecta `/home/*/n8n` vs `/opt/n8n`, perfiles Compose, limpieza forzada y dotfiles.
+- `resolve_install_base_dir` / `require_install` en menú y CLI; install idempotente → `reconfigure`.
+- Menú no aborta el script en errores (`run_menu_action`); backup crea script si falta.
 
 ### Seguridad
 

@@ -160,8 +160,6 @@ error_handler() {
     exit "$error_code"
 }
 
-trap 'error_handler ${LINENO} $?' ERR
-
 # =============================================================================
 # PRE-INSTALLATION CHECKS
 # =============================================================================
@@ -784,6 +782,101 @@ load_compose_profile_flags() {
 docker_compose() {
     load_compose_profile_flags
     docker compose "${COMPOSE_PROFILE_ARGS[@]}" "$@"
+}
+
+# Find install dir when BASE_DIR default (/opt/n8n) differs from actual path (/home/user/n8n)
+resolve_install_base_dir() {
+    local dir
+    for dir in \
+        "${N8N_BASE_DIR:-}" \
+        "${BASE_DIR}" \
+        "/home/${SUDO_USER:-}/n8n" \
+        "/opt/n8n"; do
+        [[ -z "$dir" || "$dir" == "/home//n8n" ]] && continue
+        if [[ -f "${dir}/docker-compose.yml" || -f "${dir}/.env" ]]; then
+            BASE_DIR="$dir"
+            ENV_FILE="${BASE_DIR}/.env"
+            COMPOSE_FILE="${BASE_DIR}/docker-compose.yml"
+            SECRETS_DIR="${BASE_DIR}/secrets"
+            RELEASE_FILE="${BASE_DIR}/.n8n-release"
+            ENV_TEMPLATE="${BASE_DIR}/.env.example"
+            if [[ "$BASE_DIR" == /home/* ]]; then
+                BACKUP_DIR="${BASE_DIR}/backups"
+            fi
+            log INFO "Using install directory: ${BASE_DIR}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+force_remove_n8n_stack() {
+    log INFO "Force-removing n8n containers and volumes..."
+    local c v
+    for c in n8n n8n-postgres n8n-redis n8n-qdrant n8n-minio; do
+        docker rm -f "$c" 2>/dev/null || true
+    done
+    docker ps -aq --filter "name=n8n-n8n-worker" 2>/dev/null | xargs -r docker rm -f 2>/dev/null || true
+    docker ps -aq --filter "name=n8n-" 2>/dev/null | xargs -r docker rm -f 2>/dev/null || true
+    for v in n8n_data n8n_postgres_data n8n_redis_data n8n_qdrant_data n8n_minio_data n8n_grafana_data; do
+        docker volume rm -f "$v" 2>/dev/null || true
+    done
+    docker network rm n8n_network 2>/dev/null || true
+}
+
+# Require an existing install (auto-detect /home/user/n8n vs /opt/n8n)
+require_install() {
+    check_root
+    resolve_install_base_dir || die "No n8n install found. Run install or set N8N_BASE_DIR=/path/to/n8n"
+    cd "$BASE_DIR" || die "Cannot cd ${BASE_DIR}"
+}
+
+load_install_config() {
+    if [[ -f "$ENV_FILE" ]]; then
+        load_existing_configuration
+    fi
+    load_deploy_env
+}
+
+# Menu/CLI wrapper: failures return to menu instead of exiting the script
+run_menu_action() {
+    set +e
+    "$@"
+    local _rc=$?
+    set -e
+    if [[ $_rc -ne 0 ]]; then
+        log WARN "Command finished with exit code ${_rc}"
+    fi
+    return 0
+}
+
+run_backup_manual() {
+    require_install
+    load_install_config
+    if [[ ! -x "$BACKUP_SCRIPT" ]]; then
+        log INFO "Backup script missing; creating it (idempotent)..."
+        setup_backup_system
+    fi
+    [[ -x "$BACKUP_SCRIPT" ]] || die "Backup script not available at ${BACKUP_SCRIPT}"
+    "$BACKUP_SCRIPT"
+}
+
+preflight_menu() {
+    check_root
+    resolve_install_base_dir 2>/dev/null || true
+    preflight_stack
+}
+
+validate_menu() {
+    require_install
+    load_install_config
+    validate_stack
+}
+
+ai_test_menu() {
+    require_install
+    load_install_config
+    ai_test
 }
 
 # =============================================================================
@@ -1776,9 +1869,8 @@ fix_n8n_config_listen_port() {
 
 sync_listen_port() {
     log INFO "Forcing n8n to listen on port 5678 (nginx upstream)..."
-    check_root
-    cd "$BASE_DIR"
-    load_existing_configuration
+    require_install
+    load_install_config
     apply_runtime_fixes
     generate_env
     generate_compose
@@ -1800,9 +1892,7 @@ install_deployer_to_base() {
 
 sync_encryption_key() {
     log INFO "Syncing N8N_ENCRYPTION_KEY with existing n8n data..."
-    check_root
-    cd "$BASE_DIR"
-    load_existing_configuration
+    require_install
     reconfigure_stack
 }
 
@@ -1904,6 +1994,8 @@ deploy_stack() {
     
     wait_for_n8n_upstream 180 || return 1
 
+    apply_runtime_fixes
+
     if docker_compose ps | grep -q "Up"; then
         log OK "Stack deployed successfully"
         if systemctl is-active --quiet nginx 2>/dev/null; then
@@ -1926,13 +2018,9 @@ deploy_stack() {
 reconfigure_stack() {
     log INFO "Reconfiguring n8n stack (v${SCRIPT_VERSION})..."
     check_root
+    resolve_install_base_dir || die "No existing install. Run install first."
     ensure_dirs
     install_deployer_to_base
-
-    if [[ ! -d "$BASE_DIR" ]]; then
-        die "Base directory ${BASE_DIR} not found"
-    fi
-
     cd "$BASE_DIR"
     load_existing_configuration
     resolve_encryption_key
@@ -1988,13 +2076,13 @@ status_stack() {
     echo -e "${CYN}  n8n Stack Status${NC}"
     echo -e "${CYN}========================================${NC}"
     echo ""
-    
-    cd "$BASE_DIR"
+
+    require_install
     docker_compose ps
     
     echo ""
     echo "Resource Usage:"
-    docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}"
+    docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}" 2>/dev/null || log WARN "No container stats (stack stopped?)"
     
     echo ""
     echo "Health Status:"
@@ -2026,7 +2114,7 @@ status_stack() {
 }
 
 logs_stack() {
-    cd "$BASE_DIR"
+    require_install
     docker_compose logs -f --tail=100
 }
 
@@ -2036,13 +2124,8 @@ logs_stack() {
 
 update_stack() {
     log INFO "Updating n8n stack..."
-    check_root
-    
-    cd "$BASE_DIR"
-    if [[ -f "$ENV_FILE" ]]; then
-        load_existing_configuration
-    fi
-    load_deploy_env
+    require_install
+    load_install_config
     apply_runtime_fixes
 
     if declare -F save_release_snapshot >/dev/null; then
@@ -2087,12 +2170,9 @@ doctor_stack() {
     log INFO "Diagnosing 502 Bad Gateway (nginx -> n8n upstream)..."
     echo ""
 
-    if [[ ! -f "$COMPOSE_FILE" ]]; then
-        die "Compose file not found: ${COMPOSE_FILE}. Run install first."
-    fi
-
-    cd "$BASE_DIR"
-    load_existing_configuration 2>/dev/null || load_deploy_env
+    require_install
+    [[ -f "$COMPOSE_FILE" ]] || die "Compose file not found: ${COMPOSE_FILE}"
+    load_install_config
 
     echo "=== nginx ==="
     if systemctl is-active --quiet nginx 2>/dev/null; then
@@ -2174,8 +2254,8 @@ doctor_stack() {
     echo ""
 
     log ERROR "n8n still down. Common fixes:"
-    echo "  1. Recreate containers: cd ${BASE_DIR} && docker compose up -d --force-recreate n8n"
-    echo "  2. Check postgres/redis: docker compose ps"
+    echo "  1. Recreate: cd ${BASE_DIR} && sudo bash $0 reconfigure"
+    echo "  2. Check stack: cd ${BASE_DIR} && sudo docker compose --profile ai --profile storage ps"
     echo "  3. Full reconfigure: sudo bash $0 reconfigure"
     echo "  4. Repair: $0 repair"
     return 1
@@ -2183,13 +2263,8 @@ doctor_stack() {
 
 repair_stack() {
     log INFO "Repairing n8n stack..."
-    check_root
-    
-    cd "$BASE_DIR"
-    if [[ -f "$ENV_FILE" ]]; then
-        load_existing_configuration
-    fi
-    load_deploy_env
+    require_install
+    load_install_config
     apply_runtime_fixes
     
     # Restart Docker
@@ -2225,32 +2300,59 @@ repair_stack() {
 # =============================================================================
 
 uninstall_stack() {
+    check_root
     log WARN "This will remove all n8n data and configurations!"
-    read -r -p "Are you sure? Type 'YES' to confirm: " confirm
-    
+    local confirm="${N8N_UNINSTALL_CONFIRM:-}"
+    if [[ "$confirm" != "YES" ]]; then
+        read -r -p "Are you sure? Type 'YES' to confirm: " confirm
+    fi
+
     if [[ "$confirm" != "YES" ]]; then
         log INFO "Uninstall cancelled"
         return 0
     fi
-    
+
     log INFO "Uninstalling n8n stack..."
-    
-    cd "$BASE_DIR"
-    docker_compose down -v
-    
-    # Remove files
-    rm -rf "$BASE_DIR"/*
-    rm -f "$NGINX_ENABLED"
-    rm -f "$NGINX_SITE"
-    rm -f "$BACKUP_SCRIPT"
-    rm -f /usr/local/bin/n8n-healthcheck.sh
-    
-    # Remove cron jobs
-    crontab -l 2>/dev/null | grep -v "n8n" | crontab -
-    
-    systemctl reload nginx
-    
+
+    if ! resolve_install_base_dir; then
+        log WARN "No install found (no docker-compose.yml or .env); cleaning containers/volumes by name"
+        force_remove_n8n_stack
+    else
+        cd "$BASE_DIR" || die "Cannot cd ${BASE_DIR}"
+        if [[ -f "$COMPOSE_FILE" ]]; then
+            load_compose_profile_flags
+            log INFO "Stopping stack (profiles: ${COMPOSE_PROFILE_ARGS[*]:-core only})..."
+            if ! docker_compose down -v --remove-orphans; then
+                log WARN "docker compose down failed; forcing cleanup"
+                force_remove_n8n_stack
+            fi
+        else
+            force_remove_n8n_stack
+        fi
+
+        if [[ -d "$BASE_DIR" ]]; then
+            log INFO "Removing ${BASE_DIR} (including secrets and .env)..."
+            find "$BASE_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+        fi
+    fi
+
+    rm -f "$NGINX_ENABLED" 2>/dev/null || true
+    rm -f "$NGINX_SITE" 2>/dev/null || true
+    rm -f "$BACKUP_SCRIPT" 2>/dev/null || true
+    rm -f /usr/local/bin/n8n-healthcheck.sh 2>/dev/null || true
+    rm -f /etc/logrotate.d/n8n-deployer 2>/dev/null || true
+
+    if crontab -l 2>/dev/null | grep -q "n8n"; then
+        crontab -l 2>/dev/null | grep -v "n8n" | crontab - 2>/dev/null || true
+    fi
+
+    if nginx -t 2>/dev/null; then
+        systemctl reload nginx 2>/dev/null || true
+    fi
+
     log OK "Uninstall complete"
+    echo "  Removed stack under: ${BASE_DIR:-unknown}"
+    echo "  Repo/script in /opt/n8n-deployer was NOT deleted (only runtime install)"
 }
 
 # =============================================================================
@@ -2294,7 +2396,7 @@ show_usage() {
     echo "  repair               Repair stack (restart services)"
     echo "  backup               Run manual backup"
     echo "  ai-test              Validate configured OpenAI API key"
-    echo "  uninstall            Remove stack completely"
+    echo "  uninstall            Remove stack completely (type YES; or N8N_UNINSTALL_CONFIRM=YES)"
     echo "  menu                 Show interactive menu"
     echo ""
     echo "Environment Variables (for install-auto):"
@@ -2319,6 +2421,8 @@ show_usage() {
     echo "  MINIO_VERSION        MinIO Docker tag (default: RELEASE.2025-09-07T16-13-09Z)"
     echo "  BACKUP_ENABLED       Enable backups (default: true)"
     echo "  AUTO_SSL             Enable auto SSL (default: true)"
+    echo "  N8N_BASE_DIR         Override install path (default: /opt/n8n or /home/USER/n8n)"
+    echo "  N8N_UNINSTALL_CONFIRM=YES  Non-interactive uninstall"
     echo ""
     echo "Examples:"
     echo "  $0 install"
@@ -2350,17 +2454,17 @@ menu() {
         read -r -p "Select option: " choice
         
         case "$choice" in
-            1) install_flow ;;
-            2) status_stack ;;
-            3) logs_stack ;;
-            4) update_stack ;;
-            5) repair_stack ;;
-            9) reconfigure_stack ;;
-            10) check_root && preflight_stack ;;
-            11) check_root && validate_stack ;;
-            6) "$BACKUP_SCRIPT" ;;
-            7) ai_test ;;
-            8) uninstall_stack ;;
+            1) run_menu_action install_flow ;;
+            2) run_menu_action status_stack ;;
+            3) run_menu_action logs_stack ;;
+            4) run_menu_action update_stack ;;
+            5) run_menu_action repair_stack ;;
+            9) run_menu_action reconfigure_stack ;;
+            10) run_menu_action preflight_menu ;;
+            11) run_menu_action validate_menu ;;
+            6) run_menu_action run_backup_manual ;;
+            7) run_menu_action ai_test_menu ;;
+            8) run_menu_action uninstall_stack ;;
             0) 
                 echo "Goodbye!"
                 exit 0
@@ -2380,18 +2484,20 @@ menu() {
 # =============================================================================
 
 install_flow() {
-    log INFO "Starting n8n installation..."
-    
-    # Pre-installation checks
     check_root
     check_os
     check_dependencies
+
+    # Idempotent: existing install → reconfigure (safe to re-run)
+    if resolve_install_base_dir 2>/dev/null && [[ -f "$ENV_FILE" ]]; then
+        log INFO "Existing install at ${BASE_DIR}; running idempotent reconfigure"
+        reconfigure_stack
+        return 0
+    fi
+
+    log INFO "Starting n8n installation..."
     check_resources
-    
-    # Gather configuration
     ask_inputs
-    
-    # Installation steps
     ensure_dirs
     install_docker
     generate_env
@@ -2401,16 +2507,16 @@ install_flow() {
     if declare -F preflight_stack >/dev/null; then preflight_stack || true; fi
     generate_compose
     setup_reverse_proxy
-    deploy_stack
+    deploy_stack || die "deploy_stack failed — see ${LOG_FILE}"
     save_release_snapshot 2>/dev/null || true
     validate_stack 2>/dev/null || true
-    
+
     if [[ "$BACKUP_ENABLED" == "true" ]]; then
         setup_backup_system
     fi
     install_deployer_to_base
     export_env_template 2>/dev/null || true
-    
+
     configure_firewall
     configure_fail2ban
     setup_monitoring
@@ -2444,6 +2550,11 @@ main() {
             check_root
             check_os
             check_dependencies
+            if resolve_install_base_dir 2>/dev/null && [[ -f "$ENV_FILE" ]]; then
+                log INFO "Existing install at ${BASE_DIR}; running idempotent reconfigure"
+                reconfigure_stack
+                exit 0
+            fi
             ensure_dirs
             install_docker
             ask_inputs
@@ -2454,7 +2565,7 @@ main() {
             if declare -F preflight_stack >/dev/null; then preflight_stack || true; fi
             generate_compose
             setup_reverse_proxy
-            deploy_stack
+            deploy_stack || die "deploy_stack failed — see ${LOG_FILE}"
             save_release_snapshot 2>/dev/null || true
             validate_stack 2>/dev/null || true
             if [[ "$BACKUP_ENABLED" == "true" ]]; then
@@ -2470,6 +2581,11 @@ main() {
             check_root
             check_os
             check_dependencies
+            if resolve_install_base_dir 2>/dev/null && [[ -f "$ENV_FILE" ]]; then
+                log INFO "Existing install at ${BASE_DIR}; running idempotent reconfigure"
+                reconfigure_stack
+                exit 0
+            fi
             ensure_dirs
             install_docker
             ask_inputs_non_interactive
@@ -2480,7 +2596,7 @@ main() {
             if declare -F preflight_stack >/dev/null; then preflight_stack || true; fi
             generate_compose
             setup_reverse_proxy
-            deploy_stack
+            deploy_stack || die "deploy_stack failed — see ${LOG_FILE}"
             save_release_snapshot 2>/dev/null || true
             validate_stack 2>/dev/null || true
             if [[ "$BACKUP_ENABLED" == "true" ]]; then
@@ -2496,30 +2612,35 @@ main() {
             ;;
         preflight)
             check_root
+            resolve_install_base_dir 2>/dev/null || true
             preflight_stack
             ;;
         validate)
-            check_root
-            cd "$BASE_DIR" && load_existing_configuration 2>/dev/null || true
+            require_install
+            load_install_config
             validate_stack
             ;;
         restore)
-            check_root
             restore_stack "${2:-}"
             ;;
         rollback)
             rollback_stack
             ;;
         export-env-template)
+            resolve_install_base_dir 2>/dev/null || true
             export_env_template
             ;;
         version|versions)
+            resolve_install_base_dir 2>/dev/null || true
             show_version
             ;;
         test-oauth)
+            resolve_install_base_dir 2>/dev/null || true
             test_oauth_urls
             ;;
         test-webhook)
+            require_install
+            load_install_config
             test_webhook
             ;;
         status)
@@ -2535,20 +2656,20 @@ main() {
             repair_stack
             ;;
         doctor)
-            check_root
             doctor_stack
             ;;
         sync-encryption-key)
             sync_encryption_key
             ;;
         sync-listen-port)
-            check_root
             sync_listen_port
             ;;
         backup)
-            "$BACKUP_SCRIPT"
+            run_backup_manual
             ;;
         ai-test)
+            require_install
+            load_install_config
             ai_test
             ;;
         uninstall)

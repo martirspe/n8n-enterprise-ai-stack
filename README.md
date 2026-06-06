@@ -224,6 +224,18 @@ sudo bash n8n-deployer.sh <comando>
 
 **Menú interactivo:** `sudo bash n8n-deployer.sh menu`
 
+### Idempotencia
+
+| Acción | Comportamiento al repetir |
+|--------|---------------------------|
+| `install` / `install-auto` | Si ya existe `.env` → ejecuta `reconfigure` |
+| `reconfigure` | Regenera config y `up -d` (seguro repetir) |
+| `repair` / `update` | Reinicia o actualiza sin borrar volúmenes |
+| `uninstall` | Solo con confirmación `YES` |
+| Menú | Un error no cierra el menú (vuelve al prompt) |
+
+El script detecta el install en `N8N_BASE_DIR`, `/home/USER/n8n` o `/opt/n8n`.
+
 ---
 
 ## Variables de entorno
@@ -255,6 +267,8 @@ sudo bash n8n-deployer.sh <comando>
 | `AI_COST_MODE` | No | `balanced` | Modo de coste IA |
 | `MINIO_VERSION` | No | ver script | Tag MinIO |
 | `BACKUP_RETENTION_DAYS` | No | `7` | Retención de backups |
+| `N8N_BASE_DIR` | No | auto | Ruta del install si no es la default |
+| `ENABLE_NGINX_RATE_LIMIT` | No | `false` | Rate limit solo en `/webhook/` |
 
 ### Generadas en `.env` (referencia)
 

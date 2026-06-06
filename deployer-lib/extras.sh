@@ -1,6 +1,9 @@
 # Auxiliary commands: version, templates, OAuth/webhook tests, logrotate
 
 export_env_template() {
+    if declare -F resolve_install_base_dir >/dev/null; then
+        resolve_install_base_dir 2>/dev/null || true
+    fi
     ensure_dirs
     cat > "$ENV_TEMPLATE" <<'EOF'
 # n8n AI Stack — copy to .env and fill values (never commit .env)
@@ -29,6 +32,9 @@ EOF
 }
 
 show_version() {
+    if declare -F resolve_install_base_dir >/dev/null; then
+        resolve_install_base_dir 2>/dev/null || true
+    fi
     echo "n8n AI Stack Deployer v${SCRIPT_VERSION}"
     echo "  Base dir:    ${BASE_DIR}"
     echo "  n8n image:   n8nio/n8n:${N8N_VERSION}"
@@ -48,6 +54,9 @@ show_version() {
 }
 
 test_oauth_urls() {
+    if declare -F resolve_install_base_dir >/dev/null; then
+        resolve_install_base_dir 2>/dev/null || true
+    fi
     if [[ -f "$ENV_FILE" ]]; then
         load_existing_configuration
     fi

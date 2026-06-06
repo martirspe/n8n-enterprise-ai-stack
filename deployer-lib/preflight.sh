@@ -4,6 +4,10 @@ preflight_stack() {
     log INFO "Running preflight checks..."
     local errors=0
 
+    if declare -F resolve_install_base_dir >/dev/null; then
+        resolve_install_base_dir 2>/dev/null || true
+    fi
+
     if [[ -f "$ENV_FILE" ]]; then
         load_existing_configuration
     elif [[ -n "${DOMAIN:-}" ]]; then
@@ -93,6 +97,9 @@ validate_stack() {
     log INFO "Validating running stack..."
     local errors=0
 
+    if declare -F resolve_install_base_dir >/dev/null; then
+        resolve_install_base_dir 2>/dev/null || true
+    fi
     cd "$BASE_DIR" || die "Cannot cd ${BASE_DIR}"
 
     if declare -F docker_compose >/dev/null; then
