@@ -5,7 +5,7 @@
 # Deployer Bash — n8n Community, queue mode, workers, nginx/SSL, OAuth/webhooks
 # Optional profiles: Qdrant, MinIO, Prometheus/Grafana; optional LLM API keys in .env
 # Author: MartiPE
-# Version: 1.0.4
+# Version: 1.0.5
 # =============================================================================
 
 set -euo pipefail
@@ -25,7 +25,7 @@ fi
 # =============================================================================
 
 readonly APP_NAME="n8n-stack"
-readonly SCRIPT_VERSION="1.0.4"
+readonly SCRIPT_VERSION="1.0.5"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 DEPLOY_USER="${SUDO_USER:-root}"
@@ -2119,11 +2119,7 @@ reconfigure_stack() {
 
     configure_firewall
 
-    echo ""
-    log OK "Reconfigure complete"
-    echo -e "  ${BOLD}URL:${NC} https://${FQDN}"
-    echo -e "  ${BOLD}Health:${NC} curl -fsS http://127.0.0.1:5678/healthz"
-    docker_compose ps
+    show_deploy_summary "Reconfigure completado" "false"
 }
 
 # =============================================================================
@@ -2539,6 +2535,110 @@ menu() {
 }
 
 # =============================================================================
+# DEPLOY SUMMARY (post install / reconfigure)
+# =============================================================================
+
+show_deploy_summary() {
+    local headline="${1:-Listo}"
+    local fresh_install="${2:-false}"
+
+    load_deploy_env 2>/dev/null || true
+    N8N_WORKER_REPLICAS="${N8N_WORKER_REPLICAS:-3}"
+    N8N_PROXY_HOPS="${N8N_PROXY_HOPS:-1}"
+    ENABLE_QDRANT="${ENABLE_QDRANT:-true}"
+    ENABLE_MINIO="${ENABLE_MINIO:-false}"
+    ENABLE_MONITORING="${ENABLE_MONITORING:-false}"
+    MINIO_ROOT_USER="${MINIO_ROOT_USER:-admin}"
+
+    local grafana_pass="${GRAFANA_ADMIN_PASSWORD:-}"
+    if [[ -z "$grafana_pass" && -f "$ENV_FILE" ]]; then
+        grafana_pass=$(grep -E '^GRAFANA_ADMIN_PASSWORD=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | head -n 1 || true)
+    fi
+
+    echo ""
+    echo -e "${GRN}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GRN}║  ${headline}${NC}"
+    echo -e "${GRN}╚════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+
+    echo -e "${BOLD}Accesos${NC}"
+    echo "  Editor n8n:       https://${FQDN}"
+    echo "  API REST:         https://${FQDN}/rest"
+    echo "  Webhooks:         https://${FQDN}/"
+    echo "  OAuth callback:   https://${FQDN}/rest/oauth2-credential/callback"
+    echo "  Health (local):   http://127.0.0.1:5678/healthz"
+    echo ""
+
+    echo -e "${BOLD}Stack desplegado${NC}"
+    echo "  Deployer:         v${SCRIPT_VERSION}"
+    echo "  Directorio:       ${BASE_DIR}"
+    echo "  Modo:             queue (PostgreSQL 16 + Redis 7)"
+    echo "  Workers:          ${N8N_WORKER_REPLICAS} réplica(s)"
+    echo "  Imagen n8n:       n8nio/n8n:${N8N_VERSION}"
+    echo "  N8N_PROXY_HOPS:   ${N8N_PROXY_HOPS} ($(
+        if [[ "$N8N_PROXY_HOPS" == "2" ]]; then echo "Cloudflare proxy + nginx"; else echo "solo nginx / DNS only"; fi
+    ))"
+    if [[ "$ENABLE_QDRANT" == "true" ]]; then
+        echo "  Qdrant (perfil ai):     http://qdrant:6333 — red Docker interna"
+    fi
+    if [[ "$ENABLE_MINIO" == "true" ]]; then
+        echo "  MinIO (perfil storage): http://minio:9000 — usuario ${MINIO_ROOT_USER}"
+    fi
+    if [[ "$ENABLE_MONITORING" == "true" ]]; then
+        echo "  Prometheus (local):     http://127.0.0.1:9090"
+        echo "  Grafana (local):      http://127.0.0.1:3000  usuario: admin"
+        if [[ -n "$grafana_pass" ]]; then
+            echo "  Grafana password:       ${grafana_pass}"
+        else
+            echo "  Grafana password:       ver GRAFANA_ADMIN_PASSWORD en ${ENV_FILE}"
+        fi
+    fi
+    if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+        echo "  OpenAI API key:         configurada (prueba: ai-test)"
+    fi
+    echo ""
+
+    echo -e "${BOLD}Archivos en el servidor${NC}"
+    echo "  .env:             ${ENV_FILE}"
+    echo "  Secretos:         ${SECRETS_DIR}/"
+    echo "  Compose:          ${COMPOSE_FILE}"
+    echo "  Log deployer:     ${LOG_FILE}"
+    if [[ "${BACKUP_ENABLED:-true}" == "true" ]]; then
+        echo "  Backups:          ${BACKUP_DIR}"
+    fi
+    echo ""
+
+    echo -e "${BOLD}Comandos útiles${NC}"
+    echo "  cd ${BASE_DIR}"
+    echo "  sudo bash n8n-deployer.sh status"
+    echo "  sudo bash n8n-deployer.sh validate"
+    echo "  sudo bash n8n-deployer.sh test-oauth"
+    echo "  sudo bash n8n-deployer.sh test-webhook"
+    if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+        echo "  sudo bash n8n-deployer.sh ai-test"
+    fi
+    echo ""
+
+    if [[ "$fresh_install" == "true" ]]; then
+        echo -e "${BOLD}Próximos pasos${NC}"
+        echo "  1. Abre https://${FQDN} y completa el asistente de owner (primera vez)"
+        echo "  2. Registra las URLs OAuth/webhook en Google, Meta, etc. (test-oauth)"
+        echo "  3. Ejecuta validate para confirmar que todo responde"
+        echo ""
+    fi
+
+    echo -e "${BOLD}Contenedores${NC}"
+    if declare -F docker_compose >/dev/null; then
+        cd "$BASE_DIR" 2>/dev/null && docker_compose ps 2>/dev/null || true
+    else
+        cd "$BASE_DIR" 2>/dev/null && docker compose ps 2>/dev/null || true
+    fi
+    echo ""
+    echo -e "${YEL}No compartas ${ENV_FILE} ni ${SECRETS_DIR}/ — contienen credenciales.${NC}"
+    echo ""
+}
+
+# =============================================================================
 # INSTALL FLOW
 # =============================================================================
 
@@ -2579,29 +2679,8 @@ install_flow() {
     configure_firewall
     configure_fail2ban
     setup_monitoring
-    
-    echo ""
-    echo -e "${GRN}╔════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GRN}║           INSTALLATION COMPLETE!                           ║${NC}"
-    echo -e "${GRN}╚════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    echo -e "  ${BOLD}n8n URL:${NC}        https://${FQDN}"
-    echo -e "  ${BOLD}API Endpoint:${NC} https://${FQDN}/rest"
-    echo -e "  ${BOLD}OAuth callback:${NC} https://${FQDN}/rest/oauth2-credential/callback"
-    echo -e "  ${BOLD}Proxy hops:${NC}    N8N_PROXY_HOPS=${N8N_PROXY_HOPS} (use 2 if Cloudflare proxy/orange cloud is enabled)"
-    echo ""
-    echo "  Next steps:"
-    echo "    1. Open https://${FQDN}"
-    echo "    2. Complete the owner setup wizard in the browser"
-    echo "    3. In Google/Meta consoles, register redirect/webhook URLs with this FQDN"
-    echo "    4. If using AI, verify keys with: $0 ai-test"
-    if [[ "${ENABLE_MONITORING}" == "true" ]]; then
-        echo ""
-        echo "  Monitoring (localhost only):"
-        echo "    Prometheus: http://127.0.0.1:9090"
-        echo "    Grafana:    http://127.0.0.1:3000  (admin / see GRAFANA_ADMIN_PASSWORD in .env)"
-    fi
-    echo ""
+
+    show_deploy_summary "Instalación completada" "true"
 }
 
 # =============================================================================
@@ -2641,6 +2720,7 @@ main() {
             configure_firewall
             configure_fail2ban
             setup_monitoring
+            show_deploy_summary "Instalación completada" "true"
             ;;
         install-auto)
             check_root
@@ -2671,6 +2751,7 @@ main() {
             configure_firewall
             configure_fail2ban
             setup_monitoring
+            show_deploy_summary "Instalación completada" "true"
             ;;
         reconfigure)
             reconfigure_stack

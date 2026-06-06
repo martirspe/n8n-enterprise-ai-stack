@@ -4,7 +4,7 @@ Deployer Bash para **n8n Community** con stack de IA: modo cola, PostgreSQL, Red
 
 | | |
 |---|---|
-| **Versión deployer** | `1.0.4` |
+| **Versión deployer** | `1.0.5` |
 | **Script** | [`n8n-deployer.sh`](n8n-deployer.sh) + [`deployer-lib/`](deployer-lib/) |
 | **Cambios** | [`CHANGELOG.md`](CHANGELOG.md) |
 

@@ -3,6 +3,12 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.1.0/).  
 Versionado del **deployer** (`n8n-deployer.sh`), no de la imagen `n8nio/n8n`.
 
+## [1.0.5] - 2026-06-06
+
+### Añadido
+
+- **`show_deploy_summary`:** al terminar `install`, `install-auto` y `reconfigure` muestra accesos, stack, archivos, comandos útiles, contenedores y próximos pasos.
+
 ## [1.0.4] - 2026-06-06
 
 ### Corregido
