@@ -2,7 +2,8 @@
 # =============================================================================
 # n8n AI Stack Deployer
 # =============================================================================
-# n8n Community production stack (queue mode, optional Qdrant/MinIO) — Docker, nginx, SSL
+# Deployer Bash — n8n Community, queue mode, workers, nginx/SSL, OAuth/webhooks
+# Optional profiles: Qdrant, MinIO, Prometheus/Grafana; optional LLM API keys in .env
 # Author: MartiPE
 # Version: 1.0.4
 # =============================================================================
@@ -2423,7 +2424,7 @@ show_banner() {
     echo "╔════════════════════════════════════════════════════════════╗"
     echo "║                                                            ║"
     echo "║     n8n AI Stack Deployer v${SCRIPT_VERSION}                    ║"
-    echo "║     Docker + PostgreSQL + Redis + nginx + SSL             ║"
+    echo "║     Community · queue · workers · nginx/SSL · IA opcional ║"
     echo "║                                                            ║"
     echo "╚════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"

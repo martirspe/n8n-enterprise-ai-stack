@@ -1,6 +1,6 @@
 # n8n AI Stack Deployer
 
-Despliegue y operación de **n8n Community** en producción: modo cola, PostgreSQL, Redis, nginx, SSL y perfiles opcionales (Qdrant, MinIO, Prometheus/Grafana).
+Deployer Bash para **n8n Community** con stack de IA: modo cola, PostgreSQL, Redis, workers, nginx/SSL, OAuth/webhooks y perfiles Docker para Qdrant (vectores), MinIO (S3) y monitoring (Prometheus/Grafana). Claves IA opcionales (OpenAI, Claude, Gemini). Secretos en archivos, backups y comandos SRE (`preflight`, `validate`, `doctor`, `doctor-config`, `restore`).
 
 | | |
 |---|---|
