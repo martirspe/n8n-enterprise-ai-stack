@@ -136,9 +136,61 @@ validate_stack() {
         ((errors++)) || true
     fi
 
+    if [[ "${ENABLE_MONITORING:-false}" == "true" ]]; then
+        if declare -F validate_monitoring_stack >/dev/null; then
+            validate_monitoring_stack || ((errors++)) || true
+        fi
+    fi
+
     if [[ $errors -gt 0 ]]; then
         return 1
     fi
     log OK "Stack validation passed"
+    return 0
+}
+
+validate_monitoring_stack() {
+    log INFO "Validating Prometheus/Grafana (profile observe)..."
+    local errors=0
+
+    if ! curl -fsS --max-time 5 http://127.0.0.1:9090/-/healthy >/dev/null 2>&1; then
+        log ERROR "Prometheus not healthy on 127.0.0.1:9090"
+        ((errors++)) || true
+    else
+        log OK "Prometheus /-/healthy OK"
+    fi
+
+    if ! curl -fsS --max-time 5 http://127.0.0.1:3000/api/health >/dev/null 2>&1; then
+        log ERROR "Grafana not healthy on 127.0.0.1:3000"
+        ((errors++)) || true
+    else
+        log OK "Grafana /api/health OK"
+    fi
+
+    if docker exec n8n wget -qO- http://127.0.0.1:5678/metrics 2>/dev/null | head -1 | grep -q '^#'; then
+        log OK "n8n /metrics exposes Prometheus data"
+    elif docker exec n8n node -e "require('http').get('http://127.0.0.1:5678/metrics',r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>process.exit(d.startsWith('#')?0:1))}).on('error',()=>process.exit(1))" 2>/dev/null; then
+        log OK "n8n /metrics exposes Prometheus data"
+    else
+        log ERROR "n8n /metrics not reachable (check N8N_METRICS=true)"
+        ((errors++)) || true
+    fi
+
+    local prom_container="${PROMETHEUS_CONTAINER:-n8n-prometheus}"
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$prom_container"; then
+        if docker exec "$prom_container" wget -qO- http://n8n:5678/metrics 2>/dev/null | head -1 | grep -q '^#'; then
+            log OK "Prometheus can scrape n8n:5678/metrics"
+        elif docker exec "$prom_container" wget -qO- "http://127.0.0.1:9090/api/v1/targets" 2>/dev/null | grep -q '"health":"up"'; then
+            log OK "Prometheus reports at least one target UP"
+        else
+            log WARN "Prometheus scrape of n8n not confirmed — check Status → Targets in UI"
+        fi
+    fi
+
+    if [[ $errors -gt 0 ]]; then
+        log ERROR "Monitoring validation failed"
+        return 1
+    fi
+    log OK "Monitoring validation passed"
     return 0
 }

@@ -25,17 +25,8 @@ sync_secrets_from_env() {
     [[ -n "${ENCRYPTION_KEY:-}" ]] && write_secret_file "encryption_key" "$ENCRYPTION_KEY"
     [[ -n "${POSTGRES_PASSWORD:-}" ]] && write_secret_file "postgres_password" "$POSTGRES_PASSWORD"
     [[ -n "${REDIS_PASSWORD:-}" ]] && write_secret_file "redis_password" "$REDIS_PASSWORD"
-    if [[ -n "${MINIO_PASSWORD:-}" ]]; then
+    if [[ "${ENABLE_MINIO:-false}" == "true" && -n "${MINIO_PASSWORD:-}" ]]; then
         write_secret_file "minio_password" "$MINIO_PASSWORD"
-    fi
-    if [[ -n "${OPENAI_API_KEY:-}" ]]; then
-        write_secret_file "openai_api_key" "$OPENAI_API_KEY"
-    fi
-    if [[ -n "${CLAUDE_API_KEY:-}" ]]; then
-        write_secret_file "claude_api_key" "$CLAUDE_API_KEY"
-    fi
-    if [[ -n "${GEMINI_API_KEY:-}" ]]; then
-        write_secret_file "gemini_api_key" "$GEMINI_API_KEY"
     fi
 
     log OK "Secret files updated"
@@ -49,20 +40,6 @@ read_secret_file() {
     fi
 }
 
-load_ai_keys_from_secrets() {
-    ensure_secrets_dir
-    if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-        OPENAI_API_KEY=$(read_secret_file "openai_api_key" || true)
-    fi
-    if [[ -z "${CLAUDE_API_KEY:-}" ]]; then
-        CLAUDE_API_KEY=$(read_secret_file "claude_api_key" || true)
-    fi
-    if [[ -z "${GEMINI_API_KEY:-}" ]]; then
-        GEMINI_API_KEY=$(read_secret_file "gemini_api_key" || true)
-    fi
-}
-
-# Docker Compose fragment: volume + env _FILE paths (sourced into service blocks)
 compose_secrets_volumes() {
     cat <<EOF
     volumes:

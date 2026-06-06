@@ -2,9 +2,9 @@
 # =============================================================================
 # n8n AI Stack Deployer
 # =============================================================================
-# Enterprise n8n + AI stack (Qdrant, MinIO, LLM APIs) with Docker Compose, nginx, SSL, SRE
+# n8n Community production stack (queue mode, optional Qdrant/MinIO) — Docker, nginx, SSL
 # Author: MartiPE
-# Version: 1.0.0
+# Version: 1.0.4
 # =============================================================================
 
 set -euo pipefail
@@ -23,8 +23,8 @@ fi
 # CONFIGURATION & CONSTANTS
 # =============================================================================
 
-readonly APP_NAME="n8n-enterprise"
-readonly SCRIPT_VERSION="1.0.0"
+readonly APP_NAME="n8n-stack"
+readonly SCRIPT_VERSION="1.0.4"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 DEPLOY_USER="${SUDO_USER:-root}"
@@ -74,35 +74,29 @@ readonly NC='\033[0m'
 DOMAIN="${DOMAIN:-}"
 SUBDOMAIN="${SUBDOMAIN:-n8n}"
 ENABLE_QDRANT="${ENABLE_QDRANT:-true}"
-ENABLE_MINIO="${ENABLE_MINIO:-true}"
+ENABLE_MINIO="${ENABLE_MINIO:-false}"
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-7}"
 ENABLE_NGINX_RATE_LIMIT="${ENABLE_NGINX_RATE_LIMIT:-false}"
 NGINX_RATE_LIMIT="${NGINX_RATE_LIMIT:-30}"
 ENABLE_N8N_CSP="${ENABLE_N8N_CSP:-false}"
-N8N_RUNNERS_ENABLED="${N8N_RUNNERS_ENABLED:-false}"
 SMTP_HOST=""
 SMTP_PORT="587"
 SMTP_USER=""
 SMTP_PASS=""
 SMTP_SENDER=""
 SSL_EMAIL=""
-N8N_ADMIN_PASS=""
 POSTGRES_PASSWORD=""
 REDIS_PASSWORD=""
 FQDN=""
 ENCRYPTION_KEY=""
 BACKUP_ENABLED=true
 AUTO_SSL=true
-WORKERS=1
 LOG_LEVEL="INFO"
 OPENAI_API_KEY=""
 CLAUDE_API_KEY=""
 GEMINI_API_KEY=""
-AI_ROUTER_MODE="api_only"
-AI_PRIMARY="openai"
-AI_SECONDARY="gemini"
-AI_COST_MODE="balanced"
 ENABLE_MONITORING=false
+GRAFANA_ADMIN_PASSWORD=""
 MINIO_PASSWORD=""
 MINIO_ROOT_USER="admin"
 POSTGRES_VERSION="16"
@@ -356,10 +350,17 @@ validate_password() {
     return 0
 }
 
+parse_yes_no() {
+    local answer="${1:-}"
+    local default="${2:-no}"
+    answer="${answer:-$default}"
+    [[ "$answer" =~ ^[Yy](es)?$ ]]
+}
+
 ask_inputs() {
     echo ""
     echo -e "${CYN}========================================${NC}"
-    echo -e "${CYN}  n8n Enterprise Installation${NC}"
+    echo -e "${CYN}  n8n Community Stack Installation${NC}"
     echo -e "${CYN}========================================${NC}"
     echo ""
     
@@ -370,32 +371,19 @@ ask_inputs() {
         die "Invalid domain format: ${DOMAIN}"
     fi
     
-    # Subdomain
     read -r -p "Subdomain [n8n]: " SUBDOMAIN
     SUBDOMAIN="${SUBDOMAIN:-n8n}"
     
-    # SSL Email
     while [[ -z "$SSL_EMAIL" ]]; do
-        read -r -p "SSL Certificate Email: " SSL_EMAIL
+        read -r -p "SSL certificate email (Let's Encrypt): " SSL_EMAIL
         if ! validate_email "$SSL_EMAIL"; then
             log ERROR "Invalid email format. Please try again."
             SSL_EMAIL=""
         fi
     done
     
-    # Owner password (used when creating the first n8n user on initial UI setup)
-    while [[ -z "$N8N_ADMIN_PASS" ]]; do
-        read -r -s -p "n8n owner password for first login setup (min 12 chars): " N8N_ADMIN_PASS
-        echo
-        if ! validate_password "$N8N_ADMIN_PASS"; then
-            log ERROR "Password must be at least 12 characters"
-            N8N_ADMIN_PASS=""
-        fi
-    done
-    
-    # PostgreSQL Password
     while [[ -z "$POSTGRES_PASSWORD" ]]; do
-        read -r -s -p "PostgreSQL Password (min 12 chars): " POSTGRES_PASSWORD
+        read -r -s -p "PostgreSQL password (min 12 chars): " POSTGRES_PASSWORD
         echo
         if ! validate_password "$POSTGRES_PASSWORD"; then
             log ERROR "Password must be at least 12 characters"
@@ -403,9 +391,8 @@ ask_inputs() {
         fi
     done
     
-    # Redis Password
     while [[ -z "$REDIS_PASSWORD" ]]; do
-        read -r -s -p "Redis Password (min 12 chars): " REDIS_PASSWORD
+        read -r -s -p "Redis password (min 12 chars): " REDIS_PASSWORD
         echo
         if ! validate_password "$REDIS_PASSWORD"; then
             log ERROR "Password must be at least 12 characters"
@@ -413,38 +400,43 @@ ask_inputs() {
         fi
     done
 
-    read -r -p "AI Router Mode [api_only]: " AI_ROUTER_MODE
-    AI_ROUTER_MODE="${AI_ROUTER_MODE:-api_only}"
-
-    read -r -p "Primary AI provider [openai]: " AI_PRIMARY
-    AI_PRIMARY="${AI_PRIMARY:-openai}"
-
-    read -r -p "Secondary AI provider [gemini]: " AI_SECONDARY
-    AI_SECONDARY="${AI_SECONDARY:-gemini}"
-
-    read -r -p "AI Cost Mode [balanced]: " AI_COST_MODE
-    AI_COST_MODE="${AI_COST_MODE:-balanced}"
-
-    read -r -p "n8n Enterprise License Key (optional): " N8N_LICENSE_KEY
-
-    read -r -p "OpenAI API Key (optional): " OPENAI_API_KEY
-    read -r -p "Claude API Key (optional): " CLAUDE_API_KEY
-    read -r -p "Gemini API Key (optional): " GEMINI_API_KEY
+    read -r -p "N8N_PROXY_HOPS (1=DNS only, 2=Cloudflare orange proxy) [1]: " N8N_PROXY_HOPS
+    N8N_PROXY_HOPS="${N8N_PROXY_HOPS:-1}"
 
     read -r -p "Worker replicas [3]: " N8N_WORKER_REPLICAS
     N8N_WORKER_REPLICAS="${N8N_WORKER_REPLICAS:-3}"
 
-    read -r -p "Enable monitoring stack (Prometheus/Grafana) [no]: " ENABLE_MONITORING
-    ENABLE_MONITORING="${ENABLE_MONITORING:-false}"
-    if [[ "$ENABLE_MONITORING" =~ ^[Yy](es)?$ ]]; then
-        ENABLE_MONITORING=true
+    local yn=""
+    read -r -p "Enable Qdrant vector DB (RAG / embeddings in workflows) [yes]: " yn
+    if parse_yes_no "$yn" "yes"; then
+        ENABLE_QDRANT=true
     else
-        ENABLE_MONITORING=false
+        ENABLE_QDRANT=false
     fi
 
-    if [[ -z "$MINIO_PASSWORD" ]]; then
-        MINIO_PASSWORD=$(openssl rand -hex 24)
-        log OK "Generated MinIO root password"
+    read -r -p "Enable MinIO S3 storage (optional; configure in workflows) [no]: " yn
+    if parse_yes_no "$yn" "no"; then
+        ENABLE_MINIO=true
+        if [[ -z "$MINIO_PASSWORD" ]]; then
+            MINIO_PASSWORD=$(openssl rand -hex 24)
+            log OK "Generated MinIO root password"
+        fi
+    else
+        ENABLE_MINIO=false
+        MINIO_PASSWORD=""
+    fi
+
+    read -r -p "OpenAI API key (optional, for AI nodes in n8n): " OPENAI_API_KEY
+
+    read -r -p "Enable monitoring (Prometheus/Grafana) [no]: " yn
+    if parse_yes_no "$yn" "no"; then
+        ENABLE_MONITORING=true
+        if [[ -z "$GRAFANA_ADMIN_PASSWORD" ]]; then
+            GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 18 | tr -d '/+=' | head -c 20)
+            log OK "Generated Grafana admin password (saved in .env on install)"
+        fi
+    else
+        ENABLE_MONITORING=false
     fi
 
     FQDN="${SUBDOMAIN}.${DOMAIN}"
@@ -452,31 +444,35 @@ ask_inputs() {
     echo ""
     log INFO "Configuration summary:"
     echo "  - FQDN: ${FQDN}"
-    echo "  - SSL Email: ${SSL_EMAIL}"
+    echo "  - SSL email: ${SSL_EMAIL}"
     echo "  - n8n URL: https://${FQDN}"
-    echo "  - AI Router Mode: ${AI_ROUTER_MODE}"
-    echo "  - AI Primary: ${AI_PRIMARY}"
-    echo "  - AI Secondary: ${AI_SECONDARY}"
-    echo "  - AI Cost Mode: ${AI_COST_MODE}"
+    echo "  - N8N_PROXY_HOPS: ${N8N_PROXY_HOPS}"
+    echo "  - Workers: ${N8N_WORKER_REPLICAS}"
+    echo "  - Qdrant: ${ENABLE_QDRANT}"
+    echo "  - MinIO: ${ENABLE_MINIO}"
+    echo "  - OpenAI key: $([[ -n "$OPENAI_API_KEY" ]] && echo set || echo not set)"
     echo "  - Monitoring: ${ENABLE_MONITORING}"
     echo ""
 }
 
 # Non-interactive mode for automation
 ask_inputs_non_interactive() {
-    if [[ -z "$DOMAIN" ]] || [[ -z "$SSL_EMAIL" ]] || [[ -z "$N8N_ADMIN_PASS" ]] || \
+    if [[ -z "$DOMAIN" ]] || [[ -z "$SSL_EMAIL" ]] || \
        [[ -z "$POSTGRES_PASSWORD" ]] || [[ -z "$REDIS_PASSWORD" ]]; then
-        die "Non-interactive mode requires: DOMAIN, SSL_EMAIL, N8N_ADMIN_PASS, POSTGRES_PASSWORD, REDIS_PASSWORD"
+        die "Non-interactive mode requires: DOMAIN, SSL_EMAIL, POSTGRES_PASSWORD, REDIS_PASSWORD"
     fi
     
-    AI_ROUTER_MODE="${AI_ROUTER_MODE:-api_only}"
-    AI_PRIMARY="${AI_PRIMARY:-openai}"
-    AI_SECONDARY="${AI_SECONDARY:-gemini}"
-    AI_COST_MODE="${AI_COST_MODE:-balanced}"
+    N8N_PROXY_HOPS="${N8N_PROXY_HOPS:-1}"
     ENABLE_MONITORING="${ENABLE_MONITORING:-false}"
-    N8N_LICENSE_KEY="${N8N_LICENSE_KEY:-}"
-    MINIO_PASSWORD="${MINIO_PASSWORD:-$(openssl rand -hex 24)}"
+    ENABLE_QDRANT="${ENABLE_QDRANT:-true}"
+    ENABLE_MINIO="${ENABLE_MINIO:-false}"
     N8N_WORKER_REPLICAS="${N8N_WORKER_REPLICAS:-3}"
+    if [[ "${ENABLE_MONITORING}" == "true" && -z "${GRAFANA_ADMIN_PASSWORD:-}" ]]; then
+        GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 18 | tr -d '/+=' | head -c 20)
+    fi
+    if [[ "${ENABLE_MINIO}" == "true" && -z "${MINIO_PASSWORD:-}" ]]; then
+        MINIO_PASSWORD=$(openssl rand -hex 24)
+    fi
     
     if ! validate_domain "$DOMAIN"; then
         die "Invalid DOMAIN format"
@@ -484,10 +480,6 @@ ask_inputs_non_interactive() {
     
     if ! validate_email "$SSL_EMAIL"; then
         die "Invalid SSL_EMAIL format"
-    fi
-    
-    if ! validate_password "$N8N_ADMIN_PASS"; then
-        die "N8N_ADMIN_PASS must be at least 12 characters"
     fi
     
     if ! validate_password "$POSTGRES_PASSWORD"; then
@@ -587,24 +579,19 @@ load_existing_configuration() {
     SSL_EMAIL=$(read_env_var "SSL_EMAIL" "")
     POSTGRES_PASSWORD=$(read_env_var "POSTGRES_PASSWORD" "")
     REDIS_PASSWORD=$(read_env_var "REDIS_PASSWORD" "")
-    N8N_ADMIN_PASS=$(read_env_var "N8N_ADMIN_PASS" "")
     N8N_PROXY_HOPS=$(read_env_var "N8N_PROXY_HOPS" "${N8N_PROXY_HOPS}")
     N8N_WORKER_REPLICAS=$(read_env_var "N8N_WORKER_REPLICAS" "3")
     N8N_VERSION=$(read_env_var "N8N_VERSION" "${N8N_VERSION}")
     ENABLE_MONITORING=$(read_env_var "ENABLE_MONITORING" "false")
+    GRAFANA_ADMIN_PASSWORD=$(read_env_var "GRAFANA_ADMIN_PASSWORD" "")
     OPENAI_API_KEY=$(read_env_var "OPENAI_API_KEY" "")
     CLAUDE_API_KEY=$(read_env_var "CLAUDE_API_KEY" "")
     GEMINI_API_KEY=$(read_env_var "GEMINI_API_KEY" "")
-    AI_ROUTER_MODE=$(read_env_var "AI_ROUTER_MODE" "api_only")
-    AI_PRIMARY=$(read_env_var "AI_PRIMARY" "openai")
-    AI_SECONDARY=$(read_env_var "AI_SECONDARY" "gemini")
-    AI_COST_MODE=$(read_env_var "AI_COST_MODE" "balanced")
-    N8N_LICENSE_KEY=$(read_env_var "N8N_LICENSE_KEY" "")
     MINIO_PASSWORD=$(read_env_var "MINIO_ROOT_PASSWORD" "")
     MINIO_PASSWORD="${MINIO_PASSWORD:-$(read_env_var "MINIO_PASSWORD" "")}"
     MINIO_ROOT_USER=$(read_env_var "MINIO_ROOT_USER" "admin")
     ENABLE_QDRANT=$(read_env_var "ENABLE_QDRANT" "true")
-    ENABLE_MINIO=$(read_env_var "ENABLE_MINIO" "true")
+    ENABLE_MINIO=$(read_env_var "ENABLE_MINIO" "false")
     ENABLE_NGINX_RATE_LIMIT=$(read_env_var "ENABLE_NGINX_RATE_LIMIT" "false")
     NGINX_RATE_LIMIT=$(read_env_var "NGINX_RATE_LIMIT" "${NGINX_RATE_LIMIT}")
     BACKUP_RETENTION_DAYS=$(read_env_var "BACKUP_RETENTION_DAYS" "7")
@@ -657,6 +644,10 @@ apply_runtime_fixes() {
 
 generate_env() {
     log INFO "Generating environment configuration..."
+    if [[ "${ENABLE_MONITORING}" == "true" && -z "${GRAFANA_ADMIN_PASSWORD:-}" ]]; then
+        GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 18 | tr -d '/+=' | head -c 20)
+        log OK "Generated Grafana admin password"
+    fi
     resolve_encryption_key
     apply_runtime_fixes
 
@@ -674,14 +665,18 @@ N8N_SMTP_SENDER=${SMTP_SENDER}"
     
     cat > "$ENV_FILE" <<EOF
 # =============================================================================
-# n8n Enterprise Environment Configuration
+# n8n Community Stack — environment
 # Generated: $(date -Iseconds)
 # =============================================================================
 
-# General Configuration (public URL: https://<FQDN> — set N8N_PROXY_HOPS for Cloudflare)
+# Install metadata (certbot, reconfigure)
+DOMAIN=${DOMAIN}
+SUBDOMAIN=${SUBDOMAIN}
+SSL_EMAIL=${SSL_EMAIL}
 FQDN=${FQDN}
+
+# Public URL (N8N_PROXY_HOPS: 1=DNS only, 2=Cloudflare orange proxy)
 N8N_HOST=${FQDN}
-# Listen inside container (must match Docker 127.0.0.1:5678:5678 and nginx upstream)
 N8N_LISTEN_ADDRESS=0.0.0.0
 N8N_PORT=5678
 N8N_PROTOCOL=https
@@ -691,70 +686,70 @@ N8N_PROXY_HOPS=${N8N_PROXY_HOPS}
 OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=true
 N8N_REINSTALL_MISSING_PACKAGES=false
 
-# Database Configuration
+# Database
 DB_TYPE=postgresdb
 DB_POSTGRESDB_HOST=postgres
 DB_POSTGRESDB_PORT=5432
 DB_POSTGRESDB_DATABASE=n8n
 DB_POSTGRESDB_USER=n8n
 DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 
-# Redis Queue Configuration
+# Redis queue (Bull)
 QUEUE_BULL_REDIS_HOST=redis
 QUEUE_BULL_REDIS_PORT=6379
 QUEUE_BULL_REDIS_PASSWORD=${REDIS_PASSWORD}
-
-# Compose-compatible aliases
-POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 REDIS_PASSWORD=${REDIS_PASSWORD}
 
 # Security
 N8N_ENCRYPTION_KEY=${ENCRYPTION_KEY}
 
-# Execution Settings
+# Queue mode (Community)
 EXECUTIONS_MODE=queue
 N8N_DEFAULT_BINARY_DATA_MODE=database
 EXECUTIONS_TIMEOUT=300
 EXECUTIONS_TIMEOUT_MAX=600
+N8N_WORKER_REPLICAS=${N8N_WORKER_REPLICAS}
 
-# Advanced Settings
+# Runtime
 N8N_SECURE_COOKIE=true
 N8N_LOG_LEVEL=info
 N8N_LOG_OUTPUT=console
 N8N_METRICS=true
+N8N_METRICS_INCLUDE_QUEUE_METRICS=true
 N8N_DIAGNOSTICS_ENABLED=false
-
-# Timezone
 GENERIC_TIMEZONE=UTC
 
-# AI Configuration
-AI_ROUTER_MODE=${AI_ROUTER_MODE}
-AI_PRIMARY=${AI_PRIMARY}
-AI_SECONDARY=${AI_SECONDARY}
-AI_COST_MODE=${AI_COST_MODE}
-ENABLE_MONITORING=${ENABLE_MONITORING}
-
-# Optional AI API keys
-OPENAI_API_KEY=${OPENAI_API_KEY}
-CLAUDE_API_KEY=${CLAUDE_API_KEY}
-GEMINI_API_KEY=${GEMINI_API_KEY}
-
-# MinIO
-MINIO_ROOT_USER=${MINIO_ROOT_USER}
-MINIO_ROOT_PASSWORD=${MINIO_PASSWORD}
-
-# Qdrant Vector Database
-QDRANT_URL=http://qdrant:6333
-
-# Enterprise
-N8N_LICENSE_KEY=${N8N_LICENSE_KEY}
-N8N_WORKER_REPLICAS=${N8N_WORKER_REPLICAS}
-
+# Optional Docker Compose profiles
 ENABLE_QDRANT=${ENABLE_QDRANT}
 ENABLE_MINIO=${ENABLE_MINIO}
+ENABLE_MONITORING=${ENABLE_MONITORING}
 BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS}
 ${smtp_block}
 EOF
+
+    if [[ "${ENABLE_MONITORING}" == "true" && -n "${GRAFANA_ADMIN_PASSWORD:-}" ]]; then
+        echo "GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}" >> "$ENV_FILE"
+    fi
+
+    if [[ "${ENABLE_QDRANT}" == "true" ]]; then
+        echo "QDRANT_URL=http://qdrant:6333" >> "$ENV_FILE"
+    fi
+    if [[ "${ENABLE_MINIO}" == "true" ]]; then
+        cat >> "$ENV_FILE" <<EOF
+MINIO_ROOT_USER=${MINIO_ROOT_USER}
+MINIO_ROOT_PASSWORD=${MINIO_PASSWORD}
+EOF
+    fi
+    if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+        echo "OPENAI_API_KEY=${OPENAI_API_KEY}" >> "$ENV_FILE"
+    fi
+    if [[ -n "${CLAUDE_API_KEY:-}" ]]; then
+        echo "CLAUDE_API_KEY=${CLAUDE_API_KEY}" >> "$ENV_FILE"
+    fi
+    if [[ -n "${GEMINI_API_KEY:-}" ]]; then
+        echo "GEMINI_API_KEY=${GEMINI_API_KEY}" >> "$ENV_FILE"
+    fi
     
     chmod 600 "$ENV_FILE"
     if declare -F sync_secrets_from_env >/dev/null; then
@@ -818,7 +813,7 @@ force_remove_n8n_stack() {
     done
     docker ps -aq --filter "name=n8n-n8n-worker" 2>/dev/null | xargs -r docker rm -f 2>/dev/null || true
     docker ps -aq --filter "name=n8n-" 2>/dev/null | xargs -r docker rm -f 2>/dev/null || true
-    for v in n8n_data n8n_postgres_data n8n_redis_data n8n_qdrant_data n8n_minio_data n8n_grafana_data; do
+    for v in n8n_data n8n_postgres_data n8n_redis_data n8n_qdrant_data n8n_minio_data n8n_grafana_data n8n_prometheus_data; do
         docker volume rm -f "$v" 2>/dev/null || true
     done
     docker network rm n8n_network 2>/dev/null || true
@@ -873,6 +868,11 @@ validate_menu() {
     validate_stack
 }
 
+doctor_config_menu() {
+    require_install
+    doctor_config
+}
+
 ai_test_menu() {
     require_install
     load_install_config
@@ -891,21 +891,49 @@ global:
   evaluation_interval: 15s
 
 scrape_configs:
-  - job_name: 'n8n'
+  - job_name: n8n
     metrics_path: /metrics
     static_configs:
       - targets: ['n8n:5678']
+EOF
 
-  - job_name: 'minio'
-    metrics_path: /minio/prometheus/metrics
-    static_configs:
-      - targets: ['minio:9000']
+    if [[ "${ENABLE_QDRANT:-false}" == "true" ]]; then
+        cat >> "${BASE_DIR}/prometheus.yml" <<EOF
 
-  - job_name: 'qdrant'
+  - job_name: qdrant
     metrics_path: /metrics
     static_configs:
       - targets: ['qdrant:6333']
 EOF
+    fi
+
+    if [[ "${ENABLE_MINIO:-false}" == "true" ]]; then
+        cat >> "${BASE_DIR}/prometheus.yml" <<EOF
+
+  - job_name: minio
+    metrics_path: /minio/v2/metrics/cluster
+    static_configs:
+      - targets: ['minio:9000']
+EOF
+    fi
+
+    generate_grafana_provisioning
+    log OK "Prometheus config: ${BASE_DIR}/prometheus.yml"
+}
+
+generate_grafana_provisioning() {
+    mkdir -p "${BASE_DIR}/grafana/provisioning/datasources"
+    cat > "${BASE_DIR}/grafana/provisioning/datasources/prometheus.yml" <<EOF
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+EOF
+    log OK "Grafana datasource provisioning: ${BASE_DIR}/grafana/provisioning/"
 }
 
 # =============================================================================
@@ -917,8 +945,8 @@ generate_compose() {
     
     cat > "$COMPOSE_FILE" <<EOF
 # =============================================================================
-# n8n Enterprise Stack - Docker Compose
-# Stack compose — managed by n8n-deployer.sh v1.0.0
+# n8n Community Stack - Docker Compose
+# Stack compose — managed by n8n-deployer.sh v1.0.4
 # =============================================================================
 
 services:
@@ -962,7 +990,7 @@ services:
       - "--requirepass"
       - "${REDIS_PASSWORD}"
       - "--maxmemory"
-      - "256mb"
+      - "512mb"
       - "--maxmemory-policy"
       - "noeviction"
       - "--appendonly"
@@ -1034,7 +1062,6 @@ services:
       - "N8N_DEFAULT_BINARY_DATA_MODE=database"
       - "OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=true"
       - "N8N_REINSTALL_MISSING_PACKAGES=false"
-      - "N8N_RUNNERS_ENABLED=${N8N_RUNNERS_ENABLED}"
     volumes:
       - ${SECRETS_DIR}:/secrets:ro
       - n8n_data:/home/node/.n8n
@@ -1087,7 +1114,6 @@ services:
       - "N8N_SECURE_COOKIE=true"
       - "OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=true"
       - "N8N_REINSTALL_MISSING_PACKAGES=false"
-      - "N8N_RUNNERS_ENABLED=${N8N_RUNNERS_ENABLED}"
       - "EXECUTIONS_MODE=queue"
       - "N8N_LOG_LEVEL=info"
       - "N8N_METRICS=true"
@@ -1140,6 +1166,13 @@ EOF
     environment:
       - "MINIO_ROOT_USER=${MINIO_ROOT_USER}"
       - "MINIO_ROOT_PASSWORD=${MINIO_PASSWORD}"
+EOF
+    if [[ "${ENABLE_MONITORING:-false}" == "true" ]]; then
+      cat >> "$COMPOSE_FILE" <<EOF
+      - "MINIO_PROMETHEUS_AUTH_TYPE=public"
+EOF
+    fi
+    cat >> "$COMPOSE_FILE" <<EOF
     volumes:
       - minio_data:/data
     networks:
@@ -1158,26 +1191,53 @@ EOF
   prometheus:
     profiles: ["observe"]
     image: prom/prometheus:${PROMETHEUS_VERSION}
+    container_name: n8n-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
     ports:
       - "127.0.0.1:9090:9090"
     networks:
       - n8n_network
     depends_on:
-      - n8n
+      n8n:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:9090/-/healthy || curl -fsS http://127.0.0.1:9090/-/healthy >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
   grafana:
     profiles: ["observe"]
     image: grafana/grafana:${GRAFANA_VERSION}
+    container_name: n8n-grafana
+    restart: unless-stopped
+    environment:
+      - "GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}"
+      - "GF_USERS_ALLOW_SIGN_UP=false"
+      - "GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s:%(http_port)s/"
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
     networks:
       - n8n_network
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:3000/api/health || curl -fsS http://127.0.0.1:3000/api/health >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 EOF
     fi
 
@@ -1199,6 +1259,8 @@ volumes:
     name: n8n_qdrant_data
   grafana_data:
     name: n8n_grafana_data
+  prometheus_data:
+    name: n8n_prometheus_data
 
 # =============================================================================
 # NETWORKS
@@ -1288,7 +1350,7 @@ generate_nginx() {
     # Create nginx site configuration
     cat > "$NGINX_SITE" <<EOF
 # =============================================================================
-# n8n Enterprise - nginx Configuration
+# n8n Community Stack - nginx Configuration
 # =============================================================================
 
 ${nginx_rate_limit_block}
@@ -1807,7 +1869,7 @@ run_inline_healthcheck() {
 }
 
 setup_monitoring() {
-    log INFO "Setting up monitoring..."
+    log INFO "Setting up host health cron (independent of Prometheus/Grafana profile)..."
 
     generate_healthcheck_script
     
@@ -1829,9 +1891,6 @@ ai_test() {
         set -a
         source "$ENV_FILE" 2>/dev/null || true
         set +a
-    fi
-    if declare -F load_ai_keys_from_secrets >/dev/null; then
-        load_ai_keys_from_secrets
     fi
     if [[ -n "${OPENAI_API_KEY:-}" ]]; then
         if curl -s https://api.openai.com/v1/models \
@@ -2391,6 +2450,7 @@ show_usage() {
     echo "  logs                 Show container logs"
     echo "  update               Update stack to latest version"
     echo "  doctor               Diagnose nginx 502 / upstream n8n"
+    echo "  doctor-config        Audit .env for obsolete variables before reconfigure"
     echo "  sync-encryption-key  Fix N8N_ENCRYPTION_KEY mismatch with n8n_data volume"
     echo "  sync-listen-port     Fix n8n still listening on 443 instead of 5678"
     echo "  repair               Repair stack (restart services)"
@@ -2403,20 +2463,16 @@ show_usage() {
     echo "  DOMAIN               Domain name (e.g., example.com)"
     echo "  SUBDOMAIN            Subdomain (default: n8n)"
     echo "  SSL_EMAIL            Email for SSL certificates"
-    echo "  N8N_ADMIN_PASS       Owner password for first UI setup (min 12 chars)"
     echo "  N8N_PROXY_HOPS       Reverse-proxy hops (default: 1, DNS-only Cloudflare)"
     echo "  POSTGRES_PASSWORD    PostgreSQL password (min 12 chars)"
     echo "  REDIS_PASSWORD       Redis password (min 12 chars)"
-    echo "  OPENAI_API_KEY       OpenAI API key (optional)"
-    echo "  CLAUDE_API_KEY       Claude API key (optional)"
-    echo "  GEMINI_API_KEY       Gemini API key (optional)"
-    echo "  N8N_LICENSE_KEY      n8n enterprise license key (optional)"
     echo "  N8N_WORKER_REPLICAS  Worker replicas (default: 3)"
-    echo "  AI_ROUTER_MODE       AI routing mode (default: api_only)"
-    echo "  AI_PRIMARY           Primary AI provider (default: openai)"
-    echo "  AI_SECONDARY         Secondary AI provider (default: gemini)"
-    echo "  AI_COST_MODE         AI cost mode (default: balanced)"
-    echo "  ENABLE_MONITORING    Enable monitoring stack (default: false)"
+    echo "  ENABLE_QDRANT        Qdrant vector DB profile (default: true)"
+    echo "  ENABLE_MINIO         MinIO S3 profile (default: false)"
+    echo "  OPENAI_API_KEY       OpenAI API key for AI nodes (optional)"
+    echo "  CLAUDE_API_KEY       Anthropic API key (optional, install-auto only)"
+    echo "  GEMINI_API_KEY       Google Gemini API key (optional, install-auto only)"
+    echo "  ENABLE_MONITORING    Prometheus/Grafana profile (default: false)"
     echo "  N8N_VERSION          n8n Docker tag (default: 2.23.2, see https://hub.docker.com/r/n8nio/n8n/tags)"
     echo "  MINIO_VERSION        MinIO Docker tag (default: RELEASE.2025-09-07T16-13-09Z)"
     echo "  BACKUP_ENABLED       Enable backups (default: true)"
@@ -2445,6 +2501,7 @@ menu() {
         echo "  9) Reconfigure Stack"
         echo " 10) Preflight checks"
         echo " 11) Validate stack"
+        echo " 12) Audit .env (doctor-config)"
         echo "  6) Run Backup"
         echo "  7) Test AI connection"
         echo "  8) Uninstall"
@@ -2462,6 +2519,7 @@ menu() {
             9) run_menu_action reconfigure_stack ;;
             10) run_menu_action preflight_menu ;;
             11) run_menu_action validate_menu ;;
+            12) run_menu_action doctor_config_menu ;;
             6) run_menu_action run_backup_manual ;;
             7) run_menu_action ai_test_menu ;;
             8) run_menu_action uninstall_stack ;;
@@ -2533,9 +2591,15 @@ install_flow() {
     echo ""
     echo "  Next steps:"
     echo "    1. Open https://${FQDN}"
-    echo "    2. Create the owner account (use the password you chose at install)"
+    echo "    2. Complete the owner setup wizard in the browser"
     echo "    3. In Google/Meta consoles, register redirect/webhook URLs with this FQDN"
     echo "    4. If using AI, verify keys with: $0 ai-test"
+    if [[ "${ENABLE_MONITORING}" == "true" ]]; then
+        echo ""
+        echo "  Monitoring (localhost only):"
+        echo "    Prometheus: http://127.0.0.1:9090"
+        echo "    Grafana:    http://127.0.0.1:3000  (admin / see GRAFANA_ADMIN_PASSWORD in .env)"
+    fi
     echo ""
 }
 
@@ -2657,6 +2721,10 @@ main() {
             ;;
         doctor)
             doctor_stack
+            ;;
+        doctor-config)
+            require_install
+            doctor_config
             ;;
         sync-encryption-key)
             sync_encryption_key

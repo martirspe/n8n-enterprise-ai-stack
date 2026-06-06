@@ -6,7 +6,7 @@ export_env_template() {
     fi
     ensure_dirs
     cat > "$ENV_TEMPLATE" <<'EOF'
-# n8n AI Stack — copy to .env and fill values (never commit .env)
+# n8n Community Stack — copy to .env and fill values (never commit .env)
 DOMAIN=example.com
 SUBDOMAIN=n8n
 SSL_EMAIL=admin@example.com
@@ -15,10 +15,14 @@ REDIS_PASSWORD=
 N8N_PROXY_HOPS=1
 N8N_WORKER_REPLICAS=3
 N8N_VERSION=2.23.2
-ENABLE_MONITORING=false
 ENABLE_QDRANT=true
-ENABLE_MINIO=true
+ENABLE_MINIO=false
+ENABLE_MONITORING=false
 BACKUP_RETENTION_DAYS=7
+# Optional AI keys (used by n8n AI nodes via env_file)
+# OPENAI_API_KEY=
+# CLAUDE_API_KEY=
+# GEMINI_API_KEY=
 # Optional SMTP (owner invites / password reset)
 # N8N_EMAIL_MODE=smtp
 # N8N_SMTP_HOST=
@@ -108,4 +112,93 @@ install_deployer_libs() {
         cp -a "${src_dir}/." "$dest/"
         log OK "Deployer libraries installed to ${dest}"
     fi
+}
+
+# Audit .env before migrate/reconfigure (obsolete keys from pre-1.0.2 installs)
+doctor_config() {
+    if declare -F resolve_install_base_dir >/dev/null; then
+        resolve_install_base_dir 2>/dev/null || true
+    fi
+
+    local env_path="${ENV_FILE:-}"
+    [[ -f "$env_path" ]] || die "No .env found at ${env_path:-<unset>}. Run install or set N8N_BASE_DIR."
+
+    local -a obsolete_keys=(
+        N8N_ADMIN_PASS
+        AI_ROUTER_MODE
+        AI_PRIMARY
+        AI_SECONDARY
+        AI_COST_MODE
+        N8N_LICENSE_KEY
+        N8N_RUNNERS_ENABLED
+    )
+    local -a recommended_keys=(
+        DOMAIN
+        SUBDOMAIN
+        SSL_EMAIL
+    )
+    local -a stale_secret_files=(
+        openai_api_key
+        claude_api_key
+        gemini_api_key
+    )
+
+    local issues=0
+    local secrets_dir="${SECRETS_DIR:-${BASE_DIR}/secrets}"
+
+    echo ""
+    echo "=== doctor-config: ${env_path} ==="
+    echo ""
+
+    local key line val
+    for key in "${obsolete_keys[@]}"; do
+        line=$(grep -E "^${key}=" "$env_path" 2>/dev/null | head -n 1 || true)
+        if [[ -n "$line" ]]; then
+            if [[ ${#line} -gt 72 ]]; then
+                line="${line:0:68}..."
+            fi
+            log WARN "Obsolete variable: ${line}"
+            ((issues++)) || true
+        fi
+    done
+
+    for key in "${recommended_keys[@]}"; do
+        val=$(grep -E "^${key}=" "$env_path" 2>/dev/null | cut -d= -f2- | head -n 1 || true)
+        if [[ -z "$val" ]]; then
+            log WARN "Missing recommended: ${key} (certbot / reconfigure need it)"
+            ((issues++)) || true
+        fi
+    done
+
+    if [[ -d "$secrets_dir" ]]; then
+        local secret_name
+        for secret_name in "${stale_secret_files[@]}"; do
+            if [[ -f "${secrets_dir}/${secret_name}" ]]; then
+                log WARN "Stale secret file: ${secrets_dir}/${secret_name} (API keys belong in .env only since 1.0.2)"
+                ((issues++)) || true
+            fi
+        done
+        if [[ -f "${secrets_dir}/minio_password" ]]; then
+            val=$(grep -E '^ENABLE_MINIO=' "$env_path" 2>/dev/null | cut -d= -f2- | head -n 1 || true)
+            if [[ "${val,,}" == "false" ]]; then
+                log WARN "Stale secret file: ${secrets_dir}/minio_password (ENABLE_MINIO=false)"
+                ((issues++)) || true
+            fi
+        fi
+    fi
+
+    echo ""
+    if [[ $issues -eq 0 ]]; then
+        log OK "No obsolete entries found — safe to run reconfigure"
+        return 0
+    fi
+
+    log INFO "Found ${issues} item(s) to clean up"
+    echo ""
+    echo "Recommended steps:"
+    echo "  1. sudo bash n8n-deployer.sh reconfigure"
+    echo "     (regenerates .env without obsolete variables; adds DOMAIN/SUBDOMAIN/SSL_EMAIL if known)"
+    echo "  2. Remove stale files under ${secrets_dir}/ if listed above"
+    echo "  3. sudo bash n8n-deployer.sh doctor-config   # verify again"
+    return 1
 }
