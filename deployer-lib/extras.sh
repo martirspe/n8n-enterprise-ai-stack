@@ -39,7 +39,11 @@ show_version() {
         sed 's/^/    /' "$RELEASE_FILE"
     fi
     if [[ -f "$COMPOSE_FILE" ]]; then
-        cd "$BASE_DIR" && docker compose ps 2>/dev/null || true
+        if declare -F docker_compose >/dev/null; then
+            cd "$BASE_DIR" && docker_compose ps 2>/dev/null || true
+        else
+            cd "$BASE_DIR" && docker compose ps 2>/dev/null || true
+        fi
     fi
 }
 

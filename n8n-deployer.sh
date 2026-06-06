@@ -769,6 +769,20 @@ compose_profiles_args() {
     [[ "${ENABLE_MONITORING:-false}" == "true" ]] && COMPOSE_PROFILE_ARGS+=(--profile observe)
 }
 
+load_compose_profile_flags() {
+    if [[ -f "$ENV_FILE" ]]; then
+        ENABLE_QDRANT=$(read_env_var "ENABLE_QDRANT" "${ENABLE_QDRANT:-true}")
+        ENABLE_MINIO=$(read_env_var "ENABLE_MINIO" "${ENABLE_MINIO:-true}")
+        ENABLE_MONITORING=$(read_env_var "ENABLE_MONITORING" "${ENABLE_MONITORING:-false}")
+    fi
+    compose_profiles_args
+}
+
+docker_compose() {
+    load_compose_profile_flags
+    docker compose "${COMPOSE_PROFILE_ARGS[@]}" "$@"
+}
+
 # =============================================================================
 # MONITORING CONFIGURATION
 # =============================================================================
@@ -1786,8 +1800,7 @@ sync_listen_port() {
     apply_runtime_fixes
     generate_env
     generate_compose
-    compose_profiles_args
-    docker compose "${COMPOSE_PROFILE_ARGS[@]}" up -d --force-recreate n8n n8n-worker
+    docker_compose up -d --force-recreate n8n n8n-worker
     wait_for_n8n_upstream 120
     systemctl reload nginx 2>/dev/null || true
 }
@@ -1886,20 +1899,19 @@ deploy_stack() {
     verify_stack_image_tags
 
     log INFO "Validating Docker Compose configuration..."
-    if ! docker compose config >/dev/null 2>&1; then
+    if ! docker_compose config >/dev/null 2>&1; then
         die "Docker Compose configuration invalid"
     fi
 
-    compose_profiles_args
     log INFO "Pulling latest Docker images..."
-    docker compose "${COMPOSE_PROFILE_ARGS[@]}" pull
+    docker_compose pull
     
     log INFO "Starting containers (workers: ${N8N_WORKER_REPLICAS})..."
-    docker compose "${COMPOSE_PROFILE_ARGS[@]}" up -d --scale "n8n-worker=${N8N_WORKER_REPLICAS}"
+    docker_compose up -d --scale "n8n-worker=${N8N_WORKER_REPLICAS}"
     
     wait_for_n8n_upstream 180 || return 1
 
-    if docker compose ps | grep -q "Up"; then
+    if docker_compose ps | grep -q "Up"; then
         log OK "Stack deployed successfully"
         if systemctl is-active --quiet nginx 2>/dev/null; then
             systemctl reload nginx 2>/dev/null || true
@@ -1909,7 +1921,7 @@ deploy_stack() {
         fi
     else
         log ERROR "Stack deployment failed"
-        docker compose logs n8n --tail 50 2>&1 || true
+        docker_compose logs n8n --tail 50 2>&1 || true
         return 1
     fi
 }
@@ -1970,7 +1982,7 @@ reconfigure_stack() {
     log OK "Reconfigure complete"
     echo -e "  ${BOLD}URL:${NC} https://${FQDN}"
     echo -e "  ${BOLD}Health:${NC} curl -fsS http://127.0.0.1:5678/healthz"
-    docker compose ps
+    docker_compose ps
 }
 
 # =============================================================================
@@ -1985,7 +1997,7 @@ status_stack() {
     echo ""
     
     cd "$BASE_DIR"
-    docker compose ps
+    docker_compose ps
     
     echo ""
     echo "Resource Usage:"
@@ -2022,7 +2034,7 @@ status_stack() {
 
 logs_stack() {
     cd "$BASE_DIR"
-    docker compose logs -f --tail=100
+    docker_compose logs -f --tail=100
 }
 
 # =============================================================================
@@ -2049,16 +2061,15 @@ update_stack() {
         "$BACKUP_SCRIPT" || die "Backup failed; aborting update"
     fi
     
-    compose_profiles_args
     log INFO "Pulling latest images..."
-    docker compose "${COMPOSE_PROFILE_ARGS[@]}" pull
+    docker_compose pull
     
     generate_compose
     if declare -F sync_secrets_from_env >/dev/null; then
         sync_secrets_from_env
     fi
     log INFO "Recreating containers..."
-    docker compose "${COMPOSE_PROFILE_ARGS[@]}" up -d --scale "n8n-worker=${N8N_WORKER_REPLICAS}"
+    docker_compose up -d --scale "n8n-worker=${N8N_WORKER_REPLICAS}"
     wait_for_n8n_upstream 180 || true
     if declare -F save_release_snapshot >/dev/null; then
         save_release_snapshot
@@ -2109,7 +2120,7 @@ doctor_stack() {
     echo ""
 
     echo "=== Docker stack ==="
-    docker compose ps 2>/dev/null || docker-compose ps 2>/dev/null || true
+    docker_compose ps 2>/dev/null || true
     echo ""
 
     echo "=== Port 5678 on host (nginx must reach this) ==="
@@ -2146,8 +2157,7 @@ doctor_stack() {
 
     if [[ "$n8n_state" == "missing" ]] || [[ "$n8n_state" == "exited" ]]; then
         log INFO "Starting stack..."
-        compose_profiles_args
-        docker compose "${COMPOSE_PROFILE_ARGS[@]}" up -d --scale "n8n-worker=${N8N_WORKER_REPLICAS}"
+        docker_compose up -d --scale "n8n-worker=${N8N_WORKER_REPLICAS}"
     fi
 
     echo ""
@@ -2200,8 +2210,7 @@ repair_stack() {
     
     # Recreate stack (no -v: keep volumes/credentials)
     log INFO "Recreating stack..."
-    compose_profiles_args
-    docker compose "${COMPOSE_PROFILE_ARGS[@]}" up -d --force-recreate --scale "n8n-worker=${N8N_WORKER_REPLICAS}"
+    docker_compose up -d --force-recreate --scale "n8n-worker=${N8N_WORKER_REPLICAS}"
     
     wait_for_n8n_upstream 120 || true
     systemctl reload nginx 2>/dev/null || true
@@ -2234,7 +2243,7 @@ uninstall_stack() {
     log INFO "Uninstalling n8n stack..."
     
     cd "$BASE_DIR"
-    docker compose down -v
+    docker_compose down -v
     
     # Remove files
     rm -rf "$BASE_DIR"/*

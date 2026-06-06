@@ -95,7 +95,12 @@ validate_stack() {
 
     cd "$BASE_DIR" || die "Cannot cd ${BASE_DIR}"
 
-    if ! docker compose config >/dev/null 2>&1; then
+    if declare -F docker_compose >/dev/null; then
+        if ! docker_compose config >/dev/null 2>&1; then
+            log ERROR "docker compose config invalid"
+            return 1
+        fi
+    elif ! docker compose config >/dev/null 2>&1; then
         log ERROR "docker compose config invalid"
         return 1
     fi

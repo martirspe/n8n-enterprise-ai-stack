@@ -25,7 +25,11 @@ restore_stack() {
 
     load_existing_configuration 2>/dev/null || true
 
-    docker compose stop n8n n8n-worker 2>/dev/null || true
+    if declare -F docker_compose >/dev/null; then
+        docker_compose stop n8n n8n-worker 2>/dev/null || true
+    else
+        docker compose stop n8n n8n-worker 2>/dev/null || true
+    fi
 
     local pg_file shell_env redis_file
     pg_file=$(find "$tmp" -name 'postgres_*.sql.gz' | head -1)
@@ -37,9 +41,15 @@ restore_stack() {
     log OK "PostgreSQL restored"
 
     if [[ -n "$redis_file" ]]; then
-        docker compose stop redis
-        docker cp "$redis_file" n8n-redis:/data/dump.rdb
-        docker compose start redis
+        if declare -F docker_compose >/dev/null; then
+            docker_compose stop redis
+            docker cp "$redis_file" n8n-redis:/data/dump.rdb
+            docker_compose start redis
+        else
+            docker compose stop redis
+            docker cp "$redis_file" n8n-redis:/data/dump.rdb
+            docker compose start redis
+        fi
         log OK "Redis restored"
     fi
 
@@ -65,7 +75,11 @@ restore_stack() {
 
     rm -rf "$tmp"
     generate_compose
-    docker compose up -d --scale "n8n-worker=${N8N_WORKER_REPLICAS:-3}"
+    if declare -F docker_compose >/dev/null; then
+        docker_compose up -d --scale "n8n-worker=${N8N_WORKER_REPLICAS:-3}"
+    else
+        docker compose up -d --scale "n8n-worker=${N8N_WORKER_REPLICAS:-3}"
+    fi
     wait_for_n8n_upstream 180 || true
     systemctl reload nginx 2>/dev/null || true
     log OK "Restore complete"
