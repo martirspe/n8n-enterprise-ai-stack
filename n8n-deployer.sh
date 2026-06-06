@@ -76,6 +76,7 @@ SUBDOMAIN="${SUBDOMAIN:-n8n}"
 ENABLE_QDRANT="${ENABLE_QDRANT:-true}"
 ENABLE_MINIO="${ENABLE_MINIO:-true}"
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-7}"
+ENABLE_NGINX_RATE_LIMIT="${ENABLE_NGINX_RATE_LIMIT:-false}"
 NGINX_RATE_LIMIT="${NGINX_RATE_LIMIT:-30}"
 ENABLE_N8N_CSP="${ENABLE_N8N_CSP:-false}"
 N8N_RUNNERS_ENABLED="${N8N_RUNNERS_ENABLED:-false}"
@@ -606,6 +607,8 @@ load_existing_configuration() {
     MINIO_ROOT_USER=$(read_env_var "MINIO_ROOT_USER" "admin")
     ENABLE_QDRANT=$(read_env_var "ENABLE_QDRANT" "true")
     ENABLE_MINIO=$(read_env_var "ENABLE_MINIO" "true")
+    ENABLE_NGINX_RATE_LIMIT=$(read_env_var "ENABLE_NGINX_RATE_LIMIT" "false")
+    NGINX_RATE_LIMIT=$(read_env_var "NGINX_RATE_LIMIT" "${NGINX_RATE_LIMIT}")
     BACKUP_RETENTION_DAYS=$(read_env_var "BACKUP_RETENTION_DAYS" "7")
     SMTP_HOST=$(read_env_var "N8N_SMTP_HOST" "")
     SMTP_PORT=$(read_env_var "N8N_SMTP_PORT" "587")
@@ -990,7 +993,6 @@ services:
       - "N8N_DEFAULT_BINARY_DATA_MODE=database"
       - "N8N_SECURE_COOKIE=true"
       - "OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=true"
-      - "N8N_DISABLE_PRODUCTION_MAIN_PROCESS=true"
       - "N8N_REINSTALL_MISSING_PACKAGES=false"
       - "N8N_RUNNERS_ENABLED=${N8N_RUNNERS_ENABLED}"
       - "EXECUTIONS_MODE=queue"
@@ -1018,11 +1020,11 @@ EOF
     fi
     cat >> "$COMPOSE_FILE" <<EOF
     healthcheck:
-      test: ["CMD-SHELL", "if command -v curl >/dev/null 2>&1; then curl -fsS http://localhost:5678/healthz >/dev/null; elif command -v wget >/dev/null 2>&1; then wget --spider -q http://localhost:5678/healthz; elif command -v python3 >/dev/null 2>&1; then python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:5678/healthz\")' >/dev/null; else exit 1; fi"]
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://127.0.0.1:5678/healthz',(r)=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))\""]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 60s
+      retries: 5
+      start_period: 90s
     deploy:
       resources:
         limits:
@@ -1184,6 +1186,11 @@ generate_nginx() {
     fi
 
     log INFO "Generating nginx configuration..."
+
+    local nginx_rate_limit_block=""
+    if [[ "${ENABLE_NGINX_RATE_LIMIT}" == "true" ]]; then
+        nginx_rate_limit_block="limit_req_zone \$binary_remote_addr zone=n8n_webhook_limit:10m rate=${NGINX_RATE_LIMIT}r/s;"
+    fi
     
     # Create nginx site configuration
     cat > "$NGINX_SITE" <<EOF
@@ -1191,7 +1198,7 @@ generate_nginx() {
 # n8n Enterprise - nginx Configuration
 # =============================================================================
 
-limit_req_zone \$binary_remote_addr zone=n8n_limit:10m rate=${NGINX_RATE_LIMIT}r/s;
+${nginx_rate_limit_block}
 
 map \$http_upgrade \$connection_upgrade {
     default upgrade;
@@ -1220,7 +1227,8 @@ server {
 
 # HTTPS Server
 server {
-    listen 443 ssl http2;
+    listen 443 ssl;
+    http2 on;
     server_name ${FQDN};
     
     # SSL Configuration
@@ -1234,12 +1242,6 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
     ssl_prefer_server_ciphers off;
-    
-    # OCSP Stapling
-    ssl_stapling on;
-    ssl_stapling_verify on;
-    resolver 8.8.8.8 8.8.4.4 valid=300s;
-    resolver_timeout 5s;
     
     # Security Headers
     add_header X-Frame-Options "SAMEORIGIN" always;
@@ -1258,63 +1260,43 @@ EOF
     client_max_body_size 100M;
     client_body_timeout 300s;
     proxy_connect_timeout 75s;
-    
-    location /rest/oauth2-credential/ {
-        limit_req zone=n8n_limit burst=20 nodelay;
-        proxy_pass http://n8n_backend;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_read_timeout 300s;
-    }
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
 
-    location /webhook/ {
-        limit_req zone=n8n_limit burst=50 nodelay;
-        proxy_pass http://n8n_backend;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_read_timeout 300s;
-    }
-
+    # Editor + API: no rate limit (parallel /assets/*.js and /rest/* break limit_req → 503)
     location / {
-        limit_req zone=n8n_limit burst=40 nodelay;
         proxy_pass http://n8n_backend;
         proxy_http_version 1.1;
-        
-        # Headers
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_set_header X-Forwarded-Host \$host;
         proxy_set_header X-Forwarded-Port \$server_port;
-        
-        # WebSocket Support
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection \$connection_upgrade;
-        
-        # Buffering
-        proxy_buffering on;
-        proxy_buffer_size 4k;
-        proxy_buffers 8 4k;
-        proxy_busy_buffers_size 8k;
-        
-        # Timeouts
-        proxy_read_timeout 300s;
-        proxy_send_timeout 300s;
-        
-        # Caching
-        proxy_cache off;
+        proxy_buffering off;
     }
-    
-    # Health check endpoint
-    location /health {
+
+    location /webhook/ {
+EOF
+    if [[ "${ENABLE_NGINX_RATE_LIMIT}" == "true" ]]; then
+      cat >> "$NGINX_SITE" <<EOF
+        limit_req zone=n8n_webhook_limit burst=100 nodelay;
+EOF
+    fi
+    cat >> "$NGINX_SITE" <<EOF
         proxy_pass http://n8n_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 300s;
+    }
+
+    location = /healthz {
+        proxy_pass http://n8n_backend/healthz;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         access_log off;
@@ -1904,10 +1886,21 @@ deploy_stack() {
     fi
 
     log INFO "Pulling latest Docker images..."
-    docker_compose pull
-    
+    local pull_rc=0
+    docker_compose pull >>"$LOG_FILE" 2>&1 || pull_rc=$?
+    if [[ $pull_rc -ne 0 ]]; then
+        log WARN "docker compose pull reported errors (see ${LOG_FILE}); continuing with up --pull always"
+    else
+        log OK "Docker images pulled"
+    fi
+
     log INFO "Starting containers (workers: ${N8N_WORKER_REPLICAS})..."
-    docker_compose up -d --scale "n8n-worker=${N8N_WORKER_REPLICAS}"
+    if ! docker_compose up -d --pull always --scale "n8n-worker=${N8N_WORKER_REPLICAS}"; then
+        log ERROR "docker compose up failed — check: docker compose --profile ai --profile storage ps -a"
+        docker_compose ps -a 2>&1 | tee -a "$LOG_FILE" || true
+        die "Failed to start stack in ${BASE_DIR}"
+    fi
+    log OK "Containers started"
     
     wait_for_n8n_upstream 180 || return 1
 
@@ -1963,7 +1956,7 @@ reconfigure_stack() {
         generate_nginx_bootstrap
     fi
 
-    deploy_stack
+    deploy_stack || die "deploy_stack failed — see ${LOG_FILE}"
 
     if declare -F save_release_snapshot >/dev/null; then
         save_release_snapshot
@@ -2062,14 +2055,14 @@ update_stack() {
     fi
     
     log INFO "Pulling latest images..."
-    docker_compose pull
+    docker_compose pull >>"$LOG_FILE" 2>&1 || log WARN "pull had errors; continuing"
     
     generate_compose
     if declare -F sync_secrets_from_env >/dev/null; then
         sync_secrets_from_env
     fi
     log INFO "Recreating containers..."
-    docker_compose up -d --scale "n8n-worker=${N8N_WORKER_REPLICAS}"
+    docker_compose up -d --pull always --scale "n8n-worker=${N8N_WORKER_REPLICAS}" || die "docker compose up failed"
     wait_for_n8n_upstream 180 || true
     if declare -F save_release_snapshot >/dev/null; then
         save_release_snapshot

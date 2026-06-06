@@ -264,7 +264,7 @@ Variables críticas que el script escribe o mantiene:
 - `N8N_PORT=5678`, `N8N_LISTEN_ADDRESS=0.0.0.0`
 - `EXECUTIONS_MODE=queue`, `N8N_DEFAULT_BINARY_DATA_MODE=database`
 - `OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=true`
-- `N8N_DISABLE_PRODUCTION_MAIN_PROCESS=true` (en compose)
+- `OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=true` (ejecuciones en workers, UI en main)
 - `N8N_ENCRYPTION_KEY` (sincronizada con volumen `n8n_data`)
 - `QUEUE_BULL_REDIS_*`, `DB_POSTGRESDB_*`
 
@@ -342,7 +342,7 @@ Registra típicamente:
 ### nginx
 
 - Upstream: `127.0.0.1:5678`
-- Rate limit configurable (`NGINX_RATE_LIMIT`, default 30 req/s)
+- Sin rate limit en editor/API por defecto (`ENABLE_NGINX_RATE_LIMIT=false`); opcional solo en `/webhook/`
 - WebSocket habilitado para el editor
 - `/metrics` restringido a localhost
 

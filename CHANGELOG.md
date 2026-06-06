@@ -28,6 +28,10 @@ Versionado del **deployer** (`n8n-deployer.sh`), no de la imagen `n8nio/n8n`.
 - Sincronización de `N8N_ENCRYPTION_KEY` con volumen `n8n_data`.
 - `fix_n8n_config_listen_port` no aborta el install si `n8n_data` aún no existe (primera instalación).
 - `docker_compose` aplica perfiles (`ai`/`storage`/`observe`) en `status`, `logs`, `validate`, etc.
+- `deploy_stack` continúa con `up --pull always` si `pull` falla; sin abortar por `pipefail` en pull.
+- nginx: sin `limit_req` en editor/API (evita 503 en `/assets/*.js`); rate limit opcional solo en webhooks.
+- Eliminado `N8N_DISABLE_PRODUCTION_MAIN_PROCESS` en main (UI estable como monolito).
+- Healthcheck n8n con `node`; `http2 on` en nginx; sin OCSP stapling que generaba warnings.
 
 ### Seguridad
 
