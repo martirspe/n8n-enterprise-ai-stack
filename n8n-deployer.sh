@@ -1765,7 +1765,8 @@ ai_test() {
 fix_n8n_config_listen_port() {
     local target_port="${1:-5678}"
     if ! docker volume inspect n8n_data &>/dev/null 2>&1; then
-        return 1
+        log INFO "n8n_data volume not present yet (skipped; normal before first deploy_stack)"
+        return 0
     fi
     if ! docker run --rm -v n8n_data:/data alpine test -f /data/config 2>/dev/null; then
         return 0

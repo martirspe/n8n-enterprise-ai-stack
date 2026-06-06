@@ -26,6 +26,7 @@ Versionado del **deployer** (`n8n-deployer.sh`), no de la imagen `n8nio/n8n`.
 - Publicación de n8n solo en `127.0.0.1:5678`.
 - Orden de instalación: reverse proxy antes del stack.
 - Sincronización de `N8N_ENCRYPTION_KEY` con volumen `n8n_data`.
+- `fix_n8n_config_listen_port` no aborta el install si `n8n_data` aún no existe (primera instalación).
 
 ### Seguridad
 
