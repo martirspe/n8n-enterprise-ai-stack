@@ -3,6 +3,24 @@
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-7}"
 BACKUP_EXCLUDE_BINARY_DATA="${BACKUP_EXCLUDE_BINARY_DATA:-false}"
 BACKUP_EXCLUDE_EXECUTIONS="${BACKUP_EXCLUDE_EXECUTIONS:-false}"
+BACKUP_QDRANT="${BACKUP_QDRANT:-}"
+
+restore_qdrant_volume() {
+    local archive_path="$1"
+    [[ -f "$archive_path" ]] || return 0
+    if ! docker volume inspect n8n_qdrant_data >/dev/null 2>&1; then
+        log WARN "Qdrant volume n8n_qdrant_data missing; skipping Qdrant restore"
+        return 0
+    fi
+    log INFO "Restoring Qdrant volume from $(basename "$archive_path")..."
+    docker stop n8n-qdrant 2>/dev/null || true
+    docker run --rm \
+        -v n8n_qdrant_data:/target \
+        -v "${archive_path}:/backup/qdrant.tar.gz:ro" \
+        alpine sh -c 'rm -rf /target/* /target/.[!.]* 2>/dev/null; tar -xzf /backup/qdrant.tar.gz -C /target'
+    docker start n8n-qdrant 2>/dev/null || true
+    log OK "Qdrant restored"
+}
 
 restore_stack() {
     local archive="${1:-}"
@@ -65,8 +83,9 @@ restore_stack() {
         log OK "Environment file restored"
     fi
 
-    local data_dir
+    local data_dir qdrant_file
     data_dir=$(find "$tmp" -maxdepth 1 -type d -name 'n8n_data_*' | head -1)
+    qdrant_file=$(find "$tmp" -maxdepth 1 -name 'qdrant_*.tar.gz' | head -1)
     if [[ -n "$data_dir" ]]; then
         docker run --rm \
             -v n8n_data:/target \
@@ -74,6 +93,12 @@ restore_stack() {
             alpine sh -c 'rm -rf /target/* /target/.[!.]* 2>/dev/null; cp -a /source/. /target/' 2>/dev/null || \
             log WARN "n8n_data volume restore skipped (manual copy may be needed)"
         log OK "n8n_data volume restored"
+    fi
+
+    if [[ -n "$qdrant_file" ]]; then
+        restore_qdrant_volume "$qdrant_file"
+    else
+        log WARN "No Qdrant snapshot in archive — RAG vectors unchanged or re-ingest required"
     fi
 
     rm -rf "$tmp"

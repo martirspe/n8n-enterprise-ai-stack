@@ -5,7 +5,7 @@
 # Deployer Bash — n8n Community, queue mode, workers, nginx/SSL, OAuth/webhooks
 # Optional profiles: Qdrant, MinIO, Prometheus/Grafana; optional LLM API keys in .env
 # Author: MartiPE
-# Version: 1.0.6
+# Version: 1.0.7
 # =============================================================================
 
 set -euo pipefail
@@ -25,7 +25,7 @@ fi
 # =============================================================================
 
 readonly APP_NAME="n8n-stack"
-readonly SCRIPT_VERSION="1.0.6"
+readonly SCRIPT_VERSION="1.0.7"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 DEPLOY_USER="${SUDO_USER:-root}"
@@ -79,6 +79,7 @@ ENABLE_MINIO="${ENABLE_MINIO:-false}"
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-7}"
 BACKUP_EXCLUDE_BINARY_DATA="${BACKUP_EXCLUDE_BINARY_DATA:-false}"
 BACKUP_EXCLUDE_EXECUTIONS="${BACKUP_EXCLUDE_EXECUTIONS:-false}"
+BACKUP_QDRANT="${BACKUP_QDRANT:-}"
 ENABLE_NGINX_RATE_LIMIT="${ENABLE_NGINX_RATE_LIMIT:-false}"
 NGINX_RATE_LIMIT="${NGINX_RATE_LIMIT:-30}"
 ENABLE_N8N_CSP="${ENABLE_N8N_CSP:-false}"
@@ -600,6 +601,10 @@ load_existing_configuration() {
     BACKUP_RETENTION_DAYS=$(read_env_var "BACKUP_RETENTION_DAYS" "7")
     BACKUP_EXCLUDE_BINARY_DATA=$(read_env_var "BACKUP_EXCLUDE_BINARY_DATA" "false")
     BACKUP_EXCLUDE_EXECUTIONS=$(read_env_var "BACKUP_EXCLUDE_EXECUTIONS" "false")
+    BACKUP_QDRANT=$(read_env_var "BACKUP_QDRANT" "")
+    if [[ -z "$BACKUP_QDRANT" ]]; then
+        BACKUP_QDRANT=$(read_env_var "ENABLE_QDRANT" "true")
+    fi
     SMTP_HOST=$(read_env_var "N8N_SMTP_HOST" "")
     SMTP_PORT=$(read_env_var "N8N_SMTP_PORT" "587")
     SMTP_USER=$(read_env_var "N8N_SMTP_USER" "")
@@ -667,6 +672,8 @@ N8N_SMTP_USER=${SMTP_USER}
 N8N_SMTP_PASS=${SMTP_PASS}
 N8N_SMTP_SENDER=${SMTP_SENDER}"
     fi
+
+    [[ -n "${BACKUP_QDRANT}" ]] || BACKUP_QDRANT="${ENABLE_QDRANT:-true}"
     
     cat > "$ENV_FILE" <<EOF
 # =============================================================================
@@ -732,6 +739,7 @@ ENABLE_MONITORING=${ENABLE_MONITORING}
 BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS}
 BACKUP_EXCLUDE_BINARY_DATA=${BACKUP_EXCLUDE_BINARY_DATA}
 BACKUP_EXCLUDE_EXECUTIONS=${BACKUP_EXCLUDE_EXECUTIONS}
+BACKUP_QDRANT=${BACKUP_QDRANT}
 ${smtp_block}
 EOF
 
@@ -1592,6 +1600,9 @@ setup_backup_system() {
     if [[ -n "$pg_dump_excludes" ]]; then
         log INFO "Backup pg_dump exclusions:${pg_dump_excludes}"
     fi
+    if [[ "${ENABLE_QDRANT}" == "true" && "${BACKUP_QDRANT}" == "true" ]]; then
+        log INFO "Qdrant volume (n8n_qdrant_data) will be included in backups"
+    fi
     
     # Create backup script
     cat > "$BACKUP_SCRIPT" <<EOF
@@ -1606,6 +1617,8 @@ BACKUP_DIR="${BACKUP_DIR}"
 ENV_FILE="${ENV_FILE}"
 DATE=\$(date +%Y%m%d_%H%M%S)
 RETENTION_DAYS=${BACKUP_RETENTION_DAYS}
+BACKUP_QDRANT=${BACKUP_QDRANT}
+ENABLE_QDRANT=${ENABLE_QDRANT}
 
 # Create backup directory
 mkdir -p "\$BACKUP_DIR"
@@ -1636,20 +1649,41 @@ docker cp n8n:/home/node/.n8n "\${BACKUP_DIR}/n8n_data_\${DATE}" || true
 # Backup environment file
 cp "\$ENV_FILE" "\${BACKUP_DIR}/env_\${DATE}.bak"
 
+# Backup Qdrant (RAG vectors) — volume snapshot
+if [[ "\$BACKUP_QDRANT" == "true" && "\$ENABLE_QDRANT" == "true" ]]; then
+    if docker volume inspect n8n_qdrant_data >/dev/null 2>&1; then
+        echo "Backing up Qdrant..."
+        docker stop n8n-qdrant >/dev/null 2>&1 || true
+        docker run --rm \
+            -v n8n_qdrant_data:/data:ro \
+            -v "\${BACKUP_DIR}:/backup" \
+            alpine tar -czf "/backup/qdrant_\${DATE}.tar.gz" -C /data .
+        docker start n8n-qdrant >/dev/null 2>&1 || true
+    else
+        echo "Qdrant volume n8n_qdrant_data not found; skipping"
+    fi
+fi
+
 # Start n8n container
 docker start n8n >/dev/null 2>&1 || true
 
 # Create tar archive
 cd "\$BACKUP_DIR"
-tar -czf "n8n_backup_\${DATE}.tar.gz" \
-    "postgres_\${DATE}.sql.gz" \
-    "redis_\${DATE}.rdb" \
-    "env_\${DATE}.bak" \
-    "n8n_data_\${DATE}" 2>/dev/null || tar -czf "n8n_backup_\${DATE}.tar.gz" \
-    "postgres_\${DATE}.sql.gz" \
-    "redis_\${DATE}.rdb" \
+TAR_MEMBERS=(
+    "postgres_\${DATE}.sql.gz"
+    "redis_\${DATE}.rdb"
     "env_\${DATE}.bak"
-find "\$BACKUP_DIR" -maxdepth 1 \( -name "postgres_\${DATE}.sql.gz" -o -name "redis_\${DATE}.rdb" -o -name "env_\${DATE}.bak" -o -name "n8n_data_\${DATE}" \) -delete 2>/dev/null || true
+)
+[[ -d "n8n_data_\${DATE}" ]] && TAR_MEMBERS+=("n8n_data_\${DATE}")
+[[ -f "qdrant_\${DATE}.tar.gz" ]] && TAR_MEMBERS+=("qdrant_\${DATE}.tar.gz")
+tar -czf "n8n_backup_\${DATE}.tar.gz" "\${TAR_MEMBERS[@]}"
+find "\$BACKUP_DIR" -maxdepth 1 \( \
+    -name "postgres_\${DATE}.sql.gz" \
+    -o -name "redis_\${DATE}.rdb" \
+    -o -name "env_\${DATE}.bak" \
+    -o -name "n8n_data_\${DATE}" \
+    -o -name "qdrant_\${DATE}.tar.gz" \
+    \) -delete 2>/dev/null || true
 
 # Cleanup old backups
 find "\$BACKUP_DIR" -name "n8n_backup_*.tar.gz" -mtime +\${RETENTION_DAYS} -delete
@@ -2499,6 +2533,7 @@ show_usage() {
     echo "  BACKUP_RETENTION_DAYS Retention in days (default: 7)"
     echo "  BACKUP_EXCLUDE_BINARY_DATA  Skip binary_data table (default: false)"
     echo "  BACKUP_EXCLUDE_EXECUTIONS   Skip execution history tables (default: false)"
+    echo "  BACKUP_QDRANT        Backup Qdrant volume when ENABLE_QDRANT=true (default: true)"
     echo "  AUTO_SSL             Enable auto SSL (default: true)"
     echo "  N8N_BASE_DIR         Override install path (default: /opt/n8n or /home/USER/n8n)"
     echo "  N8N_UNINSTALL_CONFIRM=YES  Non-interactive uninstall"
@@ -2639,6 +2674,9 @@ show_deploy_summary() {
         }
         if [[ -n "$backup_notes" ]]; then
             echo "  Backup Postgres:  ${backup_notes}"
+        fi
+        if [[ "${ENABLE_QDRANT:-true}" == "true" && "${BACKUP_QDRANT:-true}" == "true" ]]; then
+            echo "  Backup Qdrant:    volumen n8n_qdrant_data (RAG)"
         fi
     fi
     echo ""

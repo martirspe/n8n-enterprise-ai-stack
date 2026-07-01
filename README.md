@@ -4,7 +4,7 @@ Deployer Bash para **n8n Community** con stack de IA: modo cola, PostgreSQL, Red
 
 | | |
 |---|---|
-| **Versión deployer** | `1.0.6` |
+| **Versión deployer** | `1.0.7` |
 | **Script** | [`n8n-deployer.sh`](n8n-deployer.sh) + [`deployer-lib/`](deployer-lib/) |
 | **Cambios** | [`CHANGELOG.md`](CHANGELOG.md) |
 
@@ -154,7 +154,7 @@ Ideal: **copiar backups fuera del VPS** (S3, otro servidor) y dejar en local sol
   1. En `docker-compose.yml` del servicio `postgres`, expón solo localhost: `ports: ["127.0.0.1:5432:5432"]` y `reconfigure`.
   2. Túnel SSH desde tu PC: `ssh -L 5433:127.0.0.1:5432 devops@TU_VPS -N`
   3. Cliente SQL: host `localhost`, puerto `5433`, db `n8n`, user `n8n`, password en `secrets/postgres_password`.
-- **Qdrant:** solo red Docker interna. Listar colecciones:
+- **Qdrant:** incluido en backup si `BACKUP_QDRANT=true` (colecciones RAG). Listar colecciones en vivo:
 
 ```bash
 sudo docker exec n8n wget -qO- http://qdrant:6333/collections
@@ -383,7 +383,7 @@ sudo bash n8n-deployer.sh <comando>
 | `N8N_BASE_DIR` | No | auto | Ruta del install |
 | `N8N_UNINSTALL_CONFIRM` | No | — | `YES` para uninstall sin prompt |
 
-Más opciones: `N8N_VERSION`, `BACKUP_ENABLED`, `BACKUP_RETENTION_DAYS`, `BACKUP_EXCLUDE_BINARY_DATA`, `BACKUP_EXCLUDE_EXECUTIONS`, `AUTO_SSL`, `CLAUDE_API_KEY`, `GEMINI_API_KEY`, `GRAFANA_ADMIN_PASSWORD`, `ENABLE_NGINX_RATE_LIMIT`, `N8N_EXECUTIONS_DATA_PRUNE`, `N8N_DEFAULT_BINARY_DATA_MODE`.
+Más opciones: `N8N_VERSION`, `BACKUP_ENABLED`, `BACKUP_RETENTION_DAYS`, `BACKUP_EXCLUDE_BINARY_DATA`, `BACKUP_EXCLUDE_EXECUTIONS`, `BACKUP_QDRANT`, `AUTO_SSL`, `CLAUDE_API_KEY`, `GEMINI_API_KEY`, `GRAFANA_ADMIN_PASSWORD`, `ENABLE_NGINX_RATE_LIMIT`, `N8N_EXECUTIONS_DATA_PRUNE`, `N8N_DEFAULT_BINARY_DATA_MODE`.
 
 ---
 
@@ -462,6 +462,11 @@ Backup automático (si `BACKUP_ENABLED=true`): cron diario 02:00, retención `BA
 | `BACKUP_RETENTION_DAYS` | `7` | Días que se conservan los `.tar.gz` |
 | `BACKUP_EXCLUDE_BINARY_DATA` | `false` | Omite tabla `binary_data` (ahorra GB si hay WhatsApp/RAG) |
 | `BACKUP_EXCLUDE_EXECUTIONS` | `false` | Omite historial de ejecuciones |
+| `BACKUP_QDRANT` | `true`* | Incluye volumen Qdrant (`n8n_qdrant_data`) para RAG |
+
+\* Default `true` cuando `ENABLE_QDRANT=true`. Qdrant se para unos segundos durante el snapshot.
+
+El archivo `n8n_backup_*.tar.gz` incluye: Postgres, Redis, `.env`, volumen `n8n_data` y (si aplica) snapshot Qdrant.
 
 Tras cambiar estas variables: `reconfigure` o `backup` (regenera el script de backup).
 

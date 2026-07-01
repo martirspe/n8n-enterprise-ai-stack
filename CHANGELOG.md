@@ -3,6 +3,13 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.1.0/).  
 Versionado del **deployer** (`n8n-deployer.sh`), no de la imagen `n8nio/n8n`.
 
+## [1.0.7] - 2026-06-06
+
+### Añadido
+
+- **`BACKUP_QDRANT`:** snapshot del volumen `n8n_qdrant_data` en cada backup (default `true` con `ENABLE_QDRANT=true`); restore repuebla vectores RAG.
+- Archivo de backup unificado incluye `qdrant_*.tar.gz` dentro de `n8n_backup_*.tar.gz`.
+
 ## [1.0.6] - 2026-06-06
 
 ### Añadido
