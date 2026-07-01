@@ -1,6 +1,8 @@
 # Backup, restore, rollback
 
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-7}"
+BACKUP_EXCLUDE_BINARY_DATA="${BACKUP_EXCLUDE_BINARY_DATA:-false}"
+BACKUP_EXCLUDE_EXECUTIONS="${BACKUP_EXCLUDE_EXECUTIONS:-false}"
 
 restore_stack() {
     local archive="${1:-}"

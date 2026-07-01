@@ -4,7 +4,7 @@ Deployer Bash para **n8n Community** con stack de IA: modo cola, PostgreSQL, Red
 
 | | |
 |---|---|
-| **Versión deployer** | `1.0.5` |
+| **Versión deployer** | `1.0.6` |
 | **Script** | [`n8n-deployer.sh`](n8n-deployer.sh) + [`deployer-lib/`](deployer-lib/) |
 | **Cambios** | [`CHANGELOG.md`](CHANGELOG.md) |
 
@@ -12,24 +12,171 @@ Deployer Bash para **n8n Community** con stack de IA: modo cola, PostgreSQL, Red
 
 ## Inicio rápido
 
-```bash
-# 1. Copiar al servidor (mantén deployer-lib/ junto al script)
-scp n8n-deployer.sh deployer-lib devops@SERVIDOR:/tmp/
+### Opción A — Clonar en el VPS (recomendado)
 
-# 2. En el VPS
+Separa el **código del deployer** (git) del **runtime del stack** (`.env`, volúmenes, backups):
+
+| Ruta | Contenido |
+|------|-----------|
+| `~/n8n-deployer/` | Repo clonado (`n8n-deployer.sh`, `deployer-lib/`) |
+| `/home/devops/n8n/` | Instalación (`N8N_BASE_DIR`: `.env`, `secrets/`, `docker-compose.yml`, `backups/`) |
+
+```bash
+# En el VPS (como devops)
+sudo apt-get update && sudo apt-get install -y git
+
+# Clonar (HTTPS o SSH si tienes clave en GitHub)
+git clone https://github.com/martirspe/n8n-enterprise-ai-stack.git ~/n8n-deployer
+cd ~/n8n-deployer
+chmod +x n8n-deployer.sh
+
+# Instalar apuntando al directorio de runtime
+export N8N_BASE_DIR=/home/devops/n8n
+sudo -E bash ~/n8n-deployer/n8n-deployer.sh install
+
+# Comprobar
+export N8N_BASE_DIR=/home/devops/n8n
+sudo -E bash ~/n8n-deployer/n8n-deployer.sh validate
+```
+
+Tras `install` / `reconfigure`, el script copia una copia de sí mismo en `${N8N_BASE_DIR}/` (`install_deployer_to_base`). Puedes operar desde el repo o desde `${N8N_BASE_DIR}/n8n-deployer.sh`; lo habitual es **actualizar el repo y ejecutar desde ahí**.
+
+**Repo privado:** configura una clave SSH en el VPS (`ssh-keygen`, añade la pública en GitHub) y clona con:
+
+```bash
+git clone git@github.com:martirspe/n8n-enterprise-ai-stack.git ~/n8n-deployer
+```
+
+### Opción B — Copiar por SCP
+
+```bash
+# Desde tu PC
+scp -r n8n-deployer.sh deployer-lib devops@SERVIDOR:/tmp/
+
+# En el VPS
 sudo mkdir -p /opt/n8n/deployer-lib
 sudo cp /tmp/n8n-deployer.sh /opt/n8n/
 sudo cp -r /tmp/deployer-lib/* /opt/n8n/deployer-lib/
 sudo chmod +x /opt/n8n/n8n-deployer.sh
 
-# 3. Instalar (interactivo)
 cd /opt/n8n && sudo bash n8n-deployer.sh install
-
-# 4. Comprobar
 sudo bash n8n-deployer.sh validate
 ```
 
 Tras el primer acceso a `https://<FQDN>`, crea el usuario **owner** en el asistente web de n8n (el script no gestiona usuarios).
+
+---
+
+## Clonar y actualizar desde el VPS
+
+### Primera vez
+
+```bash
+git clone https://github.com/martirspe/n8n-enterprise-ai-stack.git ~/n8n-deployer
+cd ~/n8n-deployer
+export N8N_BASE_DIR=/home/devops/n8n   # ajusta a tu ruta real
+```
+
+### Actualizar el deployer (nuevo script, sin tocar workflows)
+
+```bash
+cd ~/n8n-deployer
+git pull
+export N8N_BASE_DIR=/home/devops/n8n
+sudo -E bash n8n-deployer.sh reconfigure
+sudo -E bash n8n-deployer.sh validate
+sudo -E bash n8n-deployer.sh doctor-config   # opcional: auditar .env obsoleto
+```
+
+### Actualizar solo imágenes Docker (n8n, Postgres, Qdrant…)
+
+```bash
+export N8N_BASE_DIR=/home/devops/n8n
+sudo -E bash ~/n8n-deployer/n8n-deployer.sh update
+sudo -E bash ~/n8n-deployer/n8n-deployer.sh validate
+```
+
+`update` hace backup previo si `BACKUP_ENABLED=true`, tira de imágenes nuevas y redespliega.
+
+### Alias útil (opcional)
+
+Añade a `~/.bashrc`:
+
+```bash
+export N8N_BASE_DIR=/home/devops/n8n
+alias n8n-deploy='sudo -E bash ~/n8n-deployer/n8n-deployer.sh'
+```
+
+Uso: `n8n-deploy status`, `n8n-deploy validate`, `n8n-deploy backup`.
+
+---
+
+## Gestión recomendada en producción
+
+### Rutina periódica
+
+| Frecuencia | Acción |
+|------------|--------|
+| Tras cada cambio en `.env` o script | `reconfigure` → `validate` |
+| Semanal | `status`, `preflight`, revisar disco (`df -h`) |
+| Tras problemas OAuth/webhooks | `test-oauth`, `test-webhook`, `doctor` |
+| Antes de cambios grandes | `backup` manual |
+| Tras `git pull` del deployer | `reconfigure` → `validate` |
+
+### Disco y backups
+
+El histórico de ejecuciones y los **binarios en Postgres** (`binary_data`, con `N8N_DEFAULT_BINARY_DATA_MODE=database`) pueden ocupar decenas de GB. Recomendado en `.env`:
+
+```env
+BACKUP_RETENTION_DAYS=2
+BACKUP_EXCLUDE_BINARY_DATA=true
+BACKUP_EXCLUDE_EXECUTIONS=true
+N8N_EXECUTIONS_DATA_PRUNE=true
+N8N_EXECUTIONS_DATA_MAX_AGE=168
+N8N_DEFAULT_BINARY_DATA_MODE=filesystem
+```
+
+Comprobar tamaño de tablas:
+
+```bash
+sudo docker exec n8n-postgres psql -U n8n -d n8n -c "
+SELECT relname, pg_size_pretty(pg_total_relation_size(oid))
+FROM pg_class WHERE relkind = 'r'
+ORDER BY pg_total_relation_size(oid) DESC LIMIT 10;"
+du -sh ${N8N_BASE_DIR}/backups/*.tar.gz 2>/dev/null
+```
+
+Ideal: **copiar backups fuera del VPS** (S3, otro servidor) y dejar en local solo 1–2 copias recientes.
+
+### Postgres y Qdrant
+
+- **Postgres:** no expuesto a internet. Para DBeaver, pgAdmin o TablePlus desde tu PC:
+  1. En `docker-compose.yml` del servicio `postgres`, expón solo localhost: `ports: ["127.0.0.1:5432:5432"]` y `reconfigure`.
+  2. Túnel SSH desde tu PC: `ssh -L 5433:127.0.0.1:5432 devops@TU_VPS -N`
+  3. Cliente SQL: host `localhost`, puerto `5433`, db `n8n`, user `n8n`, password en `secrets/postgres_password`.
+- **Qdrant:** solo red Docker interna. Listar colecciones:
+
+```bash
+sudo docker exec n8n wget -qO- http://qdrant:6333/collections
+```
+
+### Secretos y git
+
+- **Nunca** subas `.env`, `secrets/` ni backups a git.
+- El repo del deployer puede vivir en el VPS; el runtime (`${N8N_BASE_DIR}`) contiene datos sensibles aparte.
+
+### Cloudflare
+
+| Modo | `N8N_PROXY_HOPS` |
+|------|------------------|
+| DNS only (gris) | `1` |
+| Proxy naranja | `2` |
+
+Tras cambiar: `reconfigure` y `test-oauth`.
+
+### Qué no borra `uninstall`
+
+Certificados Let's Encrypt en el host y el **repo clonado** en `~/n8n-deployer` (si está fuera de `N8N_BASE_DIR`). Sí borra contenedores, volúmenes Docker y contenido de `${N8N_BASE_DIR}`.
 
 ---
 
@@ -119,10 +266,16 @@ Plantilla completa: `sudo bash n8n-deployer.sh export-env-template`
 
 ### Actualizar tras subir script nuevo
 
+Desde el repo clonado:
+
 ```bash
-sudo bash n8n-deployer.sh reconfigure
-sudo bash n8n-deployer.sh validate
+cd ~/n8n-deployer && git pull
+export N8N_BASE_DIR=/home/devops/n8n
+sudo -E bash n8n-deployer.sh reconfigure
+sudo -E bash n8n-deployer.sh validate
 ```
+
+Si copiaste el script a mano (SCP), sustituye `git pull` por copiar los archivos nuevos.
 
 ---
 
@@ -230,7 +383,7 @@ sudo bash n8n-deployer.sh <comando>
 | `N8N_BASE_DIR` | No | auto | Ruta del install |
 | `N8N_UNINSTALL_CONFIRM` | No | — | `YES` para uninstall sin prompt |
 
-Más opciones: `N8N_VERSION`, `BACKUP_ENABLED`, `AUTO_SSL`, `CLAUDE_API_KEY`, `GEMINI_API_KEY`, `GRAFANA_ADMIN_PASSWORD`, `ENABLE_NGINX_RATE_LIMIT`.
+Más opciones: `N8N_VERSION`, `BACKUP_ENABLED`, `BACKUP_RETENTION_DAYS`, `BACKUP_EXCLUDE_BINARY_DATA`, `BACKUP_EXCLUDE_EXECUTIONS`, `AUTO_SSL`, `CLAUDE_API_KEY`, `GEMINI_API_KEY`, `GRAFANA_ADMIN_PASSWORD`, `ENABLE_NGINX_RATE_LIMIT`, `N8N_EXECUTIONS_DATA_PRUNE`, `N8N_DEFAULT_BINARY_DATA_MODE`.
 
 ---
 
@@ -242,19 +395,36 @@ Más opciones: `N8N_VERSION`, `BACKUP_ENABLED`, `AUTO_SSL`, `CLAUDE_API_KEY`, `G
 
 ### Layout en el servidor
 
+**Runtime** (`${N8N_BASE_DIR}`, p. ej. `/home/devops/n8n`):
+
 ```
-${BASE_DIR}/               # /opt/n8n o /home/USER/n8n
+${N8N_BASE_DIR}/
 ├── .env                   # Config (chmod 600)
 ├── docker-compose.yml     # Generado
 ├── secrets/
-├── n8n-deployer.sh
+├── n8n-deployer.sh        # Copia del script (reconfigure)
 ├── deployer-lib/
+├── backups/
 ├── prometheus.yml         # Si monitoring
 └── grafana/               # Si monitoring
+```
 
+**Repo del deployer** (recomendado aparte, p. ej. `~/n8n-deployer/`):
+
+```
+~/n8n-deployer/
+├── n8n-deployer.sh
+├── deployer-lib/
+├── README.md
+└── CHANGELOG.md
+```
+
+Otros paths del host:
+
+```
 /etc/nginx/sites-available/n8n.conf
 /var/log/n8n/deployer.log
-/opt/backups/n8n/          # O ${BASE_DIR}/backups con install en /home/
+/opt/backups/n8n/          # Si install en /opt/n8n (sin N8N_BASE_DIR en /home)
 ```
 
 ---
@@ -280,11 +450,20 @@ URLs típicas:
 ## Backups
 
 ```bash
-sudo bash n8n-deployer.sh backup
-sudo bash n8n-deployer.sh restore
+export N8N_BASE_DIR=/home/devops/n8n
+sudo -E bash n8n-deployer.sh backup
+sudo -E bash n8n-deployer.sh restore
 ```
 
 Backup automático (si `BACKUP_ENABLED=true`): cron diario 02:00, retención `BACKUP_RETENTION_DAYS` (default 7).
+
+| Variable | Default | Efecto |
+|----------|---------|--------|
+| `BACKUP_RETENTION_DAYS` | `7` | Días que se conservan los `.tar.gz` |
+| `BACKUP_EXCLUDE_BINARY_DATA` | `false` | Omite tabla `binary_data` (ahorra GB si hay WhatsApp/RAG) |
+| `BACKUP_EXCLUDE_EXECUTIONS` | `false` | Omite historial de ejecuciones |
+
+Tras cambiar estas variables: `reconfigure` o `backup` (regenera el script de backup).
 
 ---
 

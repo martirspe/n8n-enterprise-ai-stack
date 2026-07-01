@@ -5,7 +5,7 @@
 # Deployer Bash — n8n Community, queue mode, workers, nginx/SSL, OAuth/webhooks
 # Optional profiles: Qdrant, MinIO, Prometheus/Grafana; optional LLM API keys in .env
 # Author: MartiPE
-# Version: 1.0.5
+# Version: 1.0.6
 # =============================================================================
 
 set -euo pipefail
@@ -25,7 +25,7 @@ fi
 # =============================================================================
 
 readonly APP_NAME="n8n-stack"
-readonly SCRIPT_VERSION="1.0.5"
+readonly SCRIPT_VERSION="1.0.6"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 DEPLOY_USER="${SUDO_USER:-root}"
@@ -77,6 +77,8 @@ SUBDOMAIN="${SUBDOMAIN:-n8n}"
 ENABLE_QDRANT="${ENABLE_QDRANT:-true}"
 ENABLE_MINIO="${ENABLE_MINIO:-false}"
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-7}"
+BACKUP_EXCLUDE_BINARY_DATA="${BACKUP_EXCLUDE_BINARY_DATA:-false}"
+BACKUP_EXCLUDE_EXECUTIONS="${BACKUP_EXCLUDE_EXECUTIONS:-false}"
 ENABLE_NGINX_RATE_LIMIT="${ENABLE_NGINX_RATE_LIMIT:-false}"
 NGINX_RATE_LIMIT="${NGINX_RATE_LIMIT:-30}"
 ENABLE_N8N_CSP="${ENABLE_N8N_CSP:-false}"
@@ -596,6 +598,8 @@ load_existing_configuration() {
     ENABLE_NGINX_RATE_LIMIT=$(read_env_var "ENABLE_NGINX_RATE_LIMIT" "false")
     NGINX_RATE_LIMIT=$(read_env_var "NGINX_RATE_LIMIT" "${NGINX_RATE_LIMIT}")
     BACKUP_RETENTION_DAYS=$(read_env_var "BACKUP_RETENTION_DAYS" "7")
+    BACKUP_EXCLUDE_BINARY_DATA=$(read_env_var "BACKUP_EXCLUDE_BINARY_DATA" "false")
+    BACKUP_EXCLUDE_EXECUTIONS=$(read_env_var "BACKUP_EXCLUDE_EXECUTIONS" "false")
     SMTP_HOST=$(read_env_var "N8N_SMTP_HOST" "")
     SMTP_PORT=$(read_env_var "N8N_SMTP_PORT" "587")
     SMTP_USER=$(read_env_var "N8N_SMTP_USER" "")
@@ -726,6 +730,8 @@ ENABLE_QDRANT=${ENABLE_QDRANT}
 ENABLE_MINIO=${ENABLE_MINIO}
 ENABLE_MONITORING=${ENABLE_MONITORING}
 BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS}
+BACKUP_EXCLUDE_BINARY_DATA=${BACKUP_EXCLUDE_BINARY_DATA}
+BACKUP_EXCLUDE_EXECUTIONS=${BACKUP_EXCLUDE_EXECUTIONS}
 ${smtp_block}
 EOF
 
@@ -849,10 +855,8 @@ run_menu_action() {
 run_backup_manual() {
     require_install
     load_install_config
-    if [[ ! -x "$BACKUP_SCRIPT" ]]; then
-        log INFO "Backup script missing; creating it (idempotent)..."
-        setup_backup_system
-    fi
+    log INFO "Regenerating backup script from current .env..."
+    setup_backup_system
     [[ -x "$BACKUP_SCRIPT" ]] || die "Backup script not available at ${BACKUP_SCRIPT}"
     "$BACKUP_SCRIPT"
 }
@@ -1562,6 +1566,19 @@ EOF
 # BACKUP SYSTEM
 # =============================================================================
 
+build_pg_dump_exclude_args() {
+    local args=""
+    if [[ "${BACKUP_EXCLUDE_BINARY_DATA}" == "true" ]]; then
+        args+=" --exclude-table-data=binary_data"
+    fi
+    if [[ "${BACKUP_EXCLUDE_EXECUTIONS}" == "true" ]]; then
+        args+=" --exclude-table-data=execution_entity"
+        args+=" --exclude-table-data=execution_data"
+        args+=" --exclude-table-data=execution_metadata"
+    fi
+    printf '%s' "$args"
+}
+
 setup_backup_system() {
     if [[ "$BACKUP_ENABLED" != "true" ]]; then
         log INFO "Backup system disabled"
@@ -1569,6 +1586,12 @@ setup_backup_system() {
     fi
     
     log INFO "Setting up automated backup system..."
+    local pg_dump_excludes
+    pg_dump_excludes=$(build_pg_dump_exclude_args)
+
+    if [[ -n "$pg_dump_excludes" ]]; then
+        log INFO "Backup pg_dump exclusions:${pg_dump_excludes}"
+    fi
     
     # Create backup script
     cat > "$BACKUP_SCRIPT" <<EOF
@@ -1594,7 +1617,7 @@ docker stop n8n >/dev/null 2>&1 || true
 
 # Backup PostgreSQL
 echo "Backing up PostgreSQL..."
-docker exec n8n-postgres pg_dump -U n8n n8n | gzip > "\${BACKUP_DIR}/postgres_\${DATE}.sql.gz"
+docker exec n8n-postgres pg_dump -U n8n n8n${pg_dump_excludes} | gzip -9 > "\${BACKUP_DIR}/postgres_\${DATE}.sql.gz"
 
 # Backup Redis
 echo "Backing up Redis..."
@@ -2473,6 +2496,9 @@ show_usage() {
     echo "  N8N_VERSION          n8n Docker tag (default: 2.23.2, see https://hub.docker.com/r/n8nio/n8n/tags)"
     echo "  MINIO_VERSION        MinIO Docker tag (default: RELEASE.2025-09-07T16-13-09Z)"
     echo "  BACKUP_ENABLED       Enable backups (default: true)"
+    echo "  BACKUP_RETENTION_DAYS Retention in days (default: 7)"
+    echo "  BACKUP_EXCLUDE_BINARY_DATA  Skip binary_data table (default: false)"
+    echo "  BACKUP_EXCLUDE_EXECUTIONS   Skip execution history tables (default: false)"
     echo "  AUTO_SSL             Enable auto SSL (default: true)"
     echo "  N8N_BASE_DIR         Override install path (default: /opt/n8n or /home/USER/n8n)"
     echo "  N8N_UNINSTALL_CONFIRM=YES  Non-interactive uninstall"
@@ -2605,6 +2631,15 @@ show_deploy_summary() {
     echo "  Log deployer:     ${LOG_FILE}"
     if [[ "${BACKUP_ENABLED:-true}" == "true" ]]; then
         echo "  Backups:          ${BACKUP_DIR}"
+        local backup_notes=""
+        [[ "${BACKUP_EXCLUDE_BINARY_DATA:-false}" == "true" ]] && backup_notes+="sin binary_data"
+        [[ "${BACKUP_EXCLUDE_EXECUTIONS:-false}" == "true" ]] && {
+            [[ -n "$backup_notes" ]] && backup_notes+=", "
+            backup_notes+="sin ejecuciones"
+        }
+        if [[ -n "$backup_notes" ]]; then
+            echo "  Backup Postgres:  ${backup_notes}"
+        fi
     fi
     echo ""
 

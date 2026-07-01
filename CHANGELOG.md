@@ -3,6 +3,14 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.1.0/).  
 Versionado del **deployer** (`n8n-deployer.sh`), no de la imagen `n8nio/n8n`.
 
+## [1.0.6] - 2026-06-06
+
+### Añadido
+
+- **`BACKUP_EXCLUDE_BINARY_DATA`:** excluye la tabla `binary_data` del `pg_dump` (backups mucho más pequeños cuando los binarios están en Postgres).
+- **`BACKUP_EXCLUDE_EXECUTIONS`:** excluye `execution_entity`, `execution_data` y `execution_metadata` del backup.
+- Compresión `gzip -9` en el dump de Postgres; el resumen de deploy indica exclusiones activas.
+
 ## [1.0.5] - 2026-06-06
 
 ### Añadido
