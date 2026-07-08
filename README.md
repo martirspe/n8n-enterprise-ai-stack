@@ -5,6 +5,7 @@ Deployer Bash para **n8n Community** con stack de IA: modo cola, PostgreSQL, Red
 | | |
 |---|---|
 | **Versión deployer** | `1.0.7` |
+| **Repositorio** | [github.com/martirspe/n8n-ai-stack](https://github.com/martirspe/n8n-ai-stack) |
 | **Script** | [`n8n-deployer.sh`](n8n-deployer.sh) + [`deployer-lib/`](deployer-lib/) |
 | **Cambios** | [`CHANGELOG.md`](CHANGELOG.md) |
 
@@ -26,7 +27,7 @@ Separa el **código del deployer** (git) del **runtime del stack** (`.env`, vol�
 sudo apt-get update && sudo apt-get install -y git
 
 # Clonar (HTTPS o SSH si tienes clave en GitHub)
-git clone https://github.com/martirspe/n8n-enterprise-ai-stack.git ~/n8n-deployer
+git clone https://github.com/martirspe/n8n-ai-stack.git ~/n8n-deployer
 cd ~/n8n-deployer
 chmod +x n8n-deployer.sh
 
@@ -44,7 +45,7 @@ Tras `install` / `reconfigure`, el script copia una copia de sí mismo en `${N8N
 **Repo privado:** configura una clave SSH en el VPS (`ssh-keygen`, añade la pública en GitHub) y clona con:
 
 ```bash
-git clone git@github.com:martirspe/n8n-enterprise-ai-stack.git ~/n8n-deployer
+git clone git@github.com:martirspe/n8n-ai-stack.git ~/n8n-deployer
 ```
 
 ### Opción B — Copiar por SCP
@@ -72,9 +73,17 @@ Tras el primer acceso a `https://<FQDN>`, crea el usuario **owner** en el asiste
 ### Primera vez
 
 ```bash
-git clone https://github.com/martirspe/n8n-enterprise-ai-stack.git ~/n8n-deployer
+git clone https://github.com/martirspe/n8n-ai-stack.git ~/n8n-deployer
 cd ~/n8n-deployer
 export N8N_BASE_DIR=/home/devops/n8n   # ajusta a tu ruta real
+```
+
+Si clonaste antes con la URL antigua (`n8n-enterprise-ai-stack`), actualiza el remote:
+
+```bash
+cd ~/n8n-deployer
+git remote set-url origin https://github.com/martirspe/n8n-ai-stack.git
+git pull
 ```
 
 ### Actualizar el deployer (nuevo script, sin tocar workflows)

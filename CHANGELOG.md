@@ -15,6 +15,7 @@ Versionado del **deployer** (`n8n-deployer.sh`), no de la imagen `n8nio/n8n`.
 
 - `README.md`: guía explícita para mantener `.env` de producción independiente del repo + checklist pre-`reconfigure`.
 - `export-env-template`: prioriza copiar el `.env.example` del repo para evitar plantillas desactualizadas.
+- URLs de clonado actualizadas a `https://github.com/martirspe/n8n-ai-stack.git`.
 
 ## [1.0.7] - 2026-06-06
 
