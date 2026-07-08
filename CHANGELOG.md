@@ -3,6 +3,19 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.1.0/).  
 Versionado del **deployer** (`n8n-deployer.sh`), no de la imagen `n8nio/n8n`.
 
+## [Unreleased]
+
+### Corregido
+
+- `reconfigure` ahora regenera siempre `/usr/local/bin/n8n-backup.sh` para aplicar cambios de backup del `.env` sin esperar al comando `backup`.
+- Se preservan en `reconfigure` variables avanzadas de runtime (`N8N_DEFAULT_BINARY_DATA_MODE` y poda de ejecuciones) al regenerar `.env`.
+- `docker-compose.yml` deja de forzar `N8N_DEFAULT_BINARY_DATA_MODE=database`; respeta el valor cargado desde `.env`.
+
+### Documentación
+
+- `README.md`: guía explícita para mantener `.env` de producción independiente del repo + checklist pre-`reconfigure`.
+- `export-env-template`: prioriza copiar el `.env.example` del repo para evitar plantillas desactualizadas.
+
 ## [1.0.7] - 2026-06-06
 
 ### Añadido

@@ -5,8 +5,13 @@ export_env_template() {
         resolve_install_base_dir 2>/dev/null || true
     fi
     ensure_dirs
-    cat > "$ENV_TEMPLATE" <<'EOF'
+    local src="${SCRIPT_DIR}/.env.example"
+    if [[ -f "$src" ]]; then
+        cp -f "$src" "$ENV_TEMPLATE"
+    else
+        cat > "$ENV_TEMPLATE" <<'EOF'
 # n8n Community Stack — copy to .env and fill values (never commit .env)
+# See repository .env.example for the full variable list.
 DOMAIN=example.com
 SUBDOMAIN=n8n
 SSL_EMAIL=admin@example.com
@@ -18,22 +23,12 @@ N8N_VERSION=2.23.2
 ENABLE_QDRANT=true
 ENABLE_MINIO=false
 ENABLE_MONITORING=false
-BACKUP_RETENTION_DAYS=7
-BACKUP_EXCLUDE_BINARY_DATA=false
-BACKUP_EXCLUDE_EXECUTIONS=false
+BACKUP_RETENTION_DAYS=2
+BACKUP_EXCLUDE_BINARY_DATA=true
+BACKUP_EXCLUDE_EXECUTIONS=true
 BACKUP_QDRANT=true
-# Optional AI keys (used by n8n AI nodes via env_file)
-# OPENAI_API_KEY=
-# CLAUDE_API_KEY=
-# GEMINI_API_KEY=
-# Optional SMTP (owner invites / password reset)
-# N8N_EMAIL_MODE=smtp
-# N8N_SMTP_HOST=
-# N8N_SMTP_PORT=587
-# N8N_SMTP_USER=
-# N8N_SMTP_PASS=
-# N8N_SMTP_SENDER=
 EOF
+    fi
     chmod 644 "$ENV_TEMPLATE"
     log OK "Template written: ${ENV_TEMPLATE}"
 }

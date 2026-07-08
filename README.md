@@ -262,7 +262,11 @@ sudo bash n8n-deployer.sh test-oauth
 sudo bash n8n-deployer.sh validate
 ```
 
-Plantilla completa: `sudo bash n8n-deployer.sh export-env-template`
+Plantilla completa en el repo: [`.env.example`](.env.example) o en el servidor:
+
+```bash
+sudo bash n8n-deployer.sh export-env-template   # escribe ${N8N_BASE_DIR}/.env.example
+```
 
 ### Actualizar tras subir script nuevo
 
@@ -276,6 +280,22 @@ sudo -E bash n8n-deployer.sh validate
 ```
 
 Si copiaste el script a mano (SCP), sustituye `git pull` por copiar los archivos nuevos.
+
+### Producción: `.env` independiente (recomendado)
+
+- Mantén el runtime en `${N8N_BASE_DIR}` y el código en `~/n8n-deployer`.
+- No reemplaces el `.env` de producción con `.env.example`; úsalo solo como referencia.
+- Antes de `reconfigure`, haz backup de `.env` y valida variables críticas.
+
+Checklist pre-`reconfigure`:
+
+```bash
+sudo cp /home/devops/n8n/.env /home/devops/n8n/.env.bak.$(date +%Y%m%d_%H%M%S)
+grep -E '^(FQDN|DOMAIN|SUBDOMAIN|SSL_EMAIL|POSTGRES_PASSWORD|REDIS_PASSWORD|N8N_ENCRYPTION_KEY)=' /home/devops/n8n/.env
+grep -E '^(N8N_DEFAULT_BINARY_DATA_MODE|N8N_EXECUTIONS_DATA_PRUNE|N8N_EXECUTIONS_DATA_MAX_AGE|BACKUP_EXCLUDE_BINARY_DATA|BACKUP_EXCLUDE_EXECUTIONS|BACKUP_QDRANT)=' /home/devops/n8n/.env
+export N8N_BASE_DIR=/home/devops/n8n && sudo -E bash ~/n8n-deployer/n8n-deployer.sh reconfigure
+sudo -E bash ~/n8n-deployer/n8n-deployer.sh validate
+```
 
 ---
 
